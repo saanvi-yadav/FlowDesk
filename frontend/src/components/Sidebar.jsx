@@ -1,6 +1,7 @@
 import { useNavigate, useLocation } from "react-router-dom";
 import axios from "axios";
 import { Box, Typography, Avatar } from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
 import GridViewRoundedIcon from "@mui/icons-material/GridViewRounded";
 import PeopleOutlineRoundedIcon from "@mui/icons-material/PeopleOutlineRounded";
 import ApartmentRoundedIcon from "@mui/icons-material/ApartmentRounded";
@@ -99,6 +100,7 @@ const NAV_SECTIONS = [
 export default function Sidebar({ unreadCount = 0 }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const theme = useTheme();
   const active = location.pathname;
   const user = JSON.parse(localStorage.getItem("user") || "{}");
 
@@ -123,12 +125,12 @@ export default function Sidebar({ unreadCount = 0 }) {
     cursor: "pointer",
     background:
       active === path
-        ? "linear-gradient(90deg,rgba(37,99,235,0.45),rgba(56,189,248,0.2))"
+        ? `linear-gradient(90deg,${alpha(theme.palette.primary.main, 0.45)},${alpha(theme.palette.primary.light, 0.18)})`
         : "transparent",
-    borderLeft: active === path ? "3px solid #38bdf8" : "3px solid transparent",
+    borderLeft: active === path ? `3px solid ${theme.palette.primary.light}` : "3px solid transparent",
     transition: "all 0.2s",
     "&:hover": {
-      background: active === path ? undefined : "rgba(255,255,255,0.08)",
+      background: active === path ? undefined : alpha("#ffffff", 0.08),
     },
   });
 
@@ -137,7 +139,7 @@ export default function Sidebar({ unreadCount = 0 }) {
       sx={{
         width: 240,
         minHeight: "100vh",
-        background: "linear-gradient(180deg,#0f172a 0%,#1e3a8a 100%)",
+        background: `linear-gradient(180deg,${theme.palette.custom.sidebarStart} 0%,${theme.palette.custom.sidebarEnd} 100%)`,
         display: "flex",
         flexDirection: "column",
         position: "fixed",
@@ -145,7 +147,10 @@ export default function Sidebar({ unreadCount = 0 }) {
         top: 0,
         bottom: 0,
         zIndex: 100,
-        boxShadow: "4px 0 24px rgba(37,99,235,0.18)",
+        boxShadow:
+          theme.palette.mode === "dark"
+            ? "8px 0 28px rgba(2,8,23,0.34)"
+            : "4px 0 24px rgba(37,99,235,0.18)",
       }}
     >
       {/* ── Logo ── */}
@@ -164,7 +169,7 @@ export default function Sidebar({ unreadCount = 0 }) {
               width: 36,
               height: 36,
               borderRadius: "10px",
-              background: "linear-gradient(135deg,#2563eb,#38bdf8)",
+              background: `linear-gradient(135deg,${theme.palette.primary.main},${theme.palette.primary.light})`,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -205,7 +210,7 @@ export default function Sidebar({ unreadCount = 0 }) {
             sx={{
               width: 38,
               height: 38,
-              background: "linear-gradient(135deg,#2563eb,#38bdf8)",
+              background: `linear-gradient(135deg,${theme.palette.primary.main},${theme.palette.primary.light})`,
               fontSize: 15,
               fontWeight: 700,
             }}
@@ -256,13 +261,10 @@ export default function Sidebar({ unreadCount = 0 }) {
             </Typography>
             {section.links
               .filter((link) => {
-                if (user?.role === "employee" && ["/employees", "/departments", "/reports", "/payroll"].includes(link.path)) {
+                if (user?.role === "employee" && ["/employees", "/departments"].includes(link.path)) {
                   return false;
                 }
                 if (user?.role === "manager" && link.path === "/departments") {
-                  return false;
-                }
-                if (link.path === "/payroll" && user?.role === "manager") {
                   return false;
                 }
                 return true;
@@ -275,7 +277,7 @@ export default function Sidebar({ unreadCount = 0 }) {
               >
                 <Box
                   sx={{
-                    color: active === link.path ? "#38bdf8" : "#94a3b8",
+                    color: active === link.path ? theme.palette.primary.light : "#94a3b8",
                     display: "flex",
                     alignItems: "center",
                   }}

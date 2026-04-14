@@ -12,6 +12,7 @@ import os
 import hashlib
 import secrets
 import re
+from services.workflow_service import get_department_manager_assignment
 
 app = Flask(__name__)
 CORS(app)
@@ -290,6 +291,17 @@ def require_manager_or_admin():
     return request_user, None
 
 
+def require_manager():
+    request_user, error = require_authenticated_user()
+    if error:
+        return None, error
+
+    if request_user["role"] != "manager":
+        return None, error_response("Manager access required", 403)
+
+    return request_user, None
+
+
 def department_exists(department_name):
     if not department_name:
         return True
@@ -468,7 +480,15 @@ def get_project_by_id(project_id):
 def get_manager_project_ids(user_id):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT id FROM projects WHERE manager_user_id=%s", (user_id,))
+    cursor.execute(
+        """
+        SELECT DISTINCT id
+        FROM projects
+        WHERE manager_user_id=%s
+        ORDER BY id ASC
+        """,
+        (user_id,),
+    )
     project_ids = [row["id"] for row in cursor.fetchall()]
     cursor.close()
     conn.close()
@@ -693,6 +713,37 @@ def can_access_employee(request_user, employee_id):
         return bool(employee and employee["id"] == employee_id)
 
     return employee_id in get_manager_employee_ids(request_user["id"])
+
+
+def get_department_employee_count(department_id, department_name=None):
+    if not department_id and not department_name:
+        return 0
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    if department_id:
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM employees
+            WHERE department_id=%s
+               OR (%s IS NOT NULL AND department_id IS NULL AND department=%s)
+            """,
+            (department_id, department_name, department_name),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM employees
+            WHERE department=%s
+            """,
+            (department_name,),
+        )
+    total = int(cursor.fetchone()["total"] or 0)
+    cursor.close()
+    conn.close()
+    return total
 
 
 def get_task_detail(task_id):
@@ -1193,9 +1244,6 @@ def get_leave_requests_for_scope(request_user):
 def get_payroll_records_for_scope(request_user):
     scope = get_scope_ids(request_user)
 
-    if scope["role"] == "manager":
-        return []
-
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     query = """
@@ -1204,13 +1252,24 @@ def get_payroll_records_for_scope(request_user):
         p.employee_id,
         p.pay_period_start,
         p.pay_period_end,
+        e.name AS employee_name,
         p.net_pay,
         p.status
     FROM payroll p
+    LEFT JOIN employees e ON p.employee_id = e.id
     """
     params = []
 
-    if scope["role"] == "employee":
+    if scope["role"] == "manager":
+        employee_ids = scope.get("employee_ids", [])
+        if not employee_ids:
+            cursor.close()
+            conn.close()
+            return []
+        placeholders = ",".join(["%s"] * len(employee_ids))
+        query += f" WHERE p.employee_id IN ({placeholders})"
+        params.extend(employee_ids)
+    elif scope["role"] == "employee":
         employee = scope.get("employee")
         if not employee:
             cursor.close()
@@ -1248,7 +1307,15 @@ def build_dashboard_stats(request_user):
         employees = len(scope.get("employee_ids", []))
         projects = len(scope.get("project_ids", []))
     else:
-        employees = 1 if scope.get("employee") else 0
+        employee = scope.get("employee")
+        employees = (
+            get_department_employee_count(
+                employee.get("department_id") if employee else None,
+                employee.get("department") if employee else None,
+            )
+            if employee
+            else 0
+        )
         projects = len({task["project_id"] for task in tasks if task["project_id"]})
 
     return {
@@ -1296,7 +1363,15 @@ def build_reports_payload(request_user):
         total_departments = len({task["employee_department"] for task in tasks if task["employee_department"]})
         total_projects = len(scope.get("project_ids", []))
     else:
-        total_employees = 1 if scope.get("employee") else 0
+        employee = scope.get("employee")
+        total_employees = (
+            get_department_employee_count(
+                employee.get("department_id") if employee else None,
+                employee.get("department") if employee else None,
+            )
+            if employee
+            else 0
+        )
         total_departments = 1 if scope.get("employee", {}).get("department") else 0
         total_projects = len({task["project_id"] for task in tasks if task["project_id"]})
 
@@ -1868,7 +1943,7 @@ def get_tasks():
 
 @app.route("/tasks", methods=["POST"])
 def add_task():
-    request_user, error = require_manager_or_admin()
+    request_user, error = require_manager()
     if error:
         return error
 
@@ -1880,7 +1955,6 @@ def add_task():
         priority = (data.get("priority") or "MEDIUM").strip().upper()
         assigned_to = parse_int_id(data.get("assigned_to"), "Assignee")
         project_id = parse_int_id(data.get("project_id"), "Project")
-        manager_user_id = parse_int_id(data.get("manager_user_id"), "Manager")
         deadline = parse_date_value(data.get("deadline"), "Deadline")
     except ValueError as exc:
         return error_response(str(exc), 400)
@@ -1896,23 +1970,13 @@ def add_task():
     project = get_project_by_id(project_id)
     if not project:
         return error_response("Selected project does not exist", 400)
-    if request_user["role"] == "manager":
-        if not can_access_project(request_user, project_id):
-            return error_response("Managers can only create tasks for projects they manage", 403)
-        manager_user_id = request_user["id"]
-    else:
-        if not manager_user_id:
-            manager_user_id = project.get("manager_user_id")
-        if not manager_user_id:
-            return error_response("Manager assignment is required", 400)
-        if manager_user_id != project.get("manager_user_id"):
-            return error_response("Task manager must match the manager assigned to the project department", 400)
+    if not can_access_project(request_user, project_id):
+        return error_response("Managers can only create tasks for projects they manage", 403)
+    manager_user_id = request_user["id"]
     if assigned_to and not employee_exists(assigned_to):
         return error_response("Selected assignee does not exist", 400)
     if assigned_to and not employee_is_in_project_team(project_id, assigned_to):
         return error_response("Selected assignee must be assigned to the project team", 400)
-    if request_user["role"] == "admin" and assigned_to:
-        return error_response("Admin must assign tasks to a manager first, not directly to an employee", 400)
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -1928,7 +1992,7 @@ def add_task():
             "TO_DO",
             priority,
             manager_user_id,
-            request_user["id"] if request_user["role"] == "admin" else project.get("created_by"),
+            project.get("created_by"),
             assigned_to,
             project_id,
             deadline,
@@ -1952,18 +2016,6 @@ def add_task():
                 conn=conn,
             )
             conn.commit()
-    elif manager_user_id:
-        manager = get_user_by_id(manager_user_id)
-        if manager:
-            create_notification(
-                manager["id"],
-                "Task assigned by admin",
-                f"You have received '{title}' for project '{project.get('project_name') or 'Unassigned'}'.",
-                "task",
-                conn=conn,
-            )
-            conn.commit()
-
     create_audit_log(
         request_user["id"],
         "task_created",
@@ -1988,6 +2040,9 @@ def update_task(task_id):
     task = get_task_detail(task_id)
     if not task:
         return error_response("Task not found", 404)
+
+    if request_user["role"] == "admin":
+        return error_response("Admin can only view tasks", 403)
 
     if not can_access_task(request_user, task):
         if request_user["role"] == "employee":
@@ -2049,9 +2104,6 @@ def update_task(task_id):
         return error_response("Selected project does not exist", 400)
     if assigned_to and project_id and not employee_is_in_project_team(project_id, assigned_to):
         return error_response("Selected assignee must be assigned to the project team", 400)
-    if request_user["role"] == "admin" and "assigned_to" in data and assigned_to:
-        return error_response("Admin must assign tasks to a manager first, not directly to an employee", 400)
-
     title = (data.get("title") if "title" in data else task["title"] or "").strip()
     description = (data.get("description") if "description" in data else task.get("description") or "").strip()
     priority = (
@@ -2147,14 +2199,14 @@ def update_task(task_id):
 
 @app.route("/tasks/<int:task_id>", methods=["DELETE"])
 def delete_task(task_id):
-    request_user, error = require_manager_or_admin()
+    request_user, error = require_manager()
     if error:
         return error
 
     task = get_task_detail(task_id)
     if not task:
         return error_response("Task not found", 404)
-    if request_user["role"] == "manager" and not can_access_task(request_user, task):
+    if not can_access_task(request_user, task):
         return error_response("Managers can only delete tasks for their own projects", 403)
 
     conn = get_db_connection()
@@ -2186,77 +2238,14 @@ def assign_task_to_manager():
     request_user, error = require_admin()
     if error:
         return error
-
-    data = request.get_json(silent=True) or {}
-    try:
-        title = (data.get("title") or "").strip()
-        description = (data.get("description") or "").strip()
-        priority = (data.get("priority") or "MEDIUM").strip().upper()
-        project_id = parse_int_id(data.get("project_id"), "Project", required=True)
-        manager_user_id = parse_int_id(data.get("manager_user_id"), "Manager", required=False)
-        deadline = parse_date_value(data.get("deadline"), "Deadline")
-    except ValueError as exc:
-        return error_response(str(exc), 400)
-
-    if not title:
-        return error_response("Task title is required", 400)
-    if priority not in TASK_PRIORITIES:
-        return error_response("Invalid task priority", 400)
-
-    project = get_project_by_id(project_id)
-    if not project:
-        return error_response("Project not found", 404)
-
-    manager_user_id = manager_user_id or project.get("manager_user_id")
-    if not manager_user_id:
-        return error_response("Project must be linked to a department manager first", 400)
-    if manager_user_id != project.get("manager_user_id"):
-        return error_response("Task manager must match the manager assigned to the project department", 400)
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT INTO tasks (
-            title, description, status, priority, manager_user_id,
-            assigned_by_admin_user_id, assigned_to, project_id, deadline
-        )
-        VALUES (%s, %s, %s, %s, %s, %s, NULL, %s, %s)
-        """,
-        (
-            title,
-            description or None,
-            "TO_DO",
-            priority,
-            manager_user_id,
-            request_user["id"],
-            project_id,
-            deadline,
-        ),
+    create_audit_log(
+        request_user["id"],
+        "task_assignment_blocked",
+        "task",
+        None,
+        {"reason": "admin_task_assignment_not_allowed"},
     )
-    task_id = cursor.lastrowid
-    conn.commit()
-
-    manager = get_user_by_id(manager_user_id)
-    if manager:
-        create_notification(
-            manager["id"],
-            "Task assigned by admin",
-            f"You have received '{title}' for project '{project.get('project_name') or 'Unassigned'}'.",
-            "task",
-            conn=conn,
-        )
-        conn.commit()
-
-    cursor.close()
-    conn.close()
-
-    return jsonify({
-        "message": "Task assigned to manager successfully",
-        "task_id": task_id,
-        "manager_user_id": manager_user_id,
-        "project_id": project_id,
-    }), 201
+    return error_response("Admin can only view tasks. Task creation and assignment belong to department managers.", 403)
 
 
 @app.route("/my-department-projects", methods=["GET"])
@@ -2493,11 +2482,13 @@ def get_managers():
             users.name,
             users.email,
             users.role,
-            departments.id AS department_id,
-            departments.name AS department_name
+            MIN(departments.id) AS department_id,
+            MIN(departments.name) AS department_name,
+            COUNT(DISTINCT departments.id) AS department_count
         FROM users
         LEFT JOIN departments ON departments.manager_user_id = users.id
         WHERE users.role='manager'
+        GROUP BY users.id, users.name, users.email, users.role
         ORDER BY users.name ASC
         """
     )
@@ -2863,21 +2854,16 @@ def add_project():
 
     try:
         department_id = parse_int_id(data.get("department_id"), "Department", required=True)
-        manager_user_id = parse_int_id(data.get("manager_user_id"), "Manager", required=True)
         team_member_ids = normalize_team_member_ids(team_member_ids)
     except ValueError as exc:
         return error_response(str(exc), 400)
 
-    department = get_department_by_id(department_id)
+    department = get_department_manager_assignment(department_id)
     if not department:
         return error_response("Selected department does not exist", 400)
-
-    manager = get_user_by_id(manager_user_id)
-    if not manager or manager["role"] != "manager":
-        return error_response("Selected manager is invalid", 400)
-
-    if department.get("manager_user_id") != manager_user_id:
-        return error_response("Selected manager must be assigned as the department manager", 400)
+    manager_user_id = department.get("manager_user_id")
+    if not manager_user_id:
+        return error_response("Selected department must have a manager assigned first", 400)
 
     try:
         valid_employee_ids = validate_team_members_for_department(department["name"], team_member_ids)
@@ -2934,6 +2920,34 @@ def add_project():
     }), 201
 
 
+@app.route("/departments/<int:department_id>/manager", methods=["GET"])
+def get_department_manager(department_id):
+    request_user, error = require_authenticated_user()
+    if error:
+        return error
+
+    if request_user["role"] == "manager":
+        managed_departments = {department["id"] for department in get_departments_for_manager(request_user["id"])}
+        if department_id not in managed_departments:
+            return error_response("Managers can only view manager details for their own department", 403)
+    elif request_user["role"] == "employee":
+        employee = get_employee_for_user(request_user)
+        if not employee or employee.get("department_id") != department_id:
+            return error_response("Employees can only view manager details for their own department", 403)
+
+    department = get_department_manager_assignment(department_id)
+    if not department:
+        return error_response("Department not found", 404)
+
+    return jsonify({
+        "department_id": department["id"],
+        "department_name": department["name"],
+        "manager_user_id": department["manager_user_id"],
+        "manager_name": department.get("manager_name"),
+        "manager_email": department.get("manager_email"),
+    })
+
+
 @app.route("/projects/<int:project_id>", methods=["PUT"])
 def update_project(project_id):
     request_user, error = require_manager_or_admin()
@@ -2972,7 +2986,6 @@ def update_project(project_id):
     if request_user["role"] == "admin":
         try:
             department_id = parse_int_id(data.get("department_id"), "Department", required=True)
-            manager_user_id = parse_int_id(data.get("manager_user_id"), "Manager", required=True)
             if team_member_ids is not None:
                 team_member_ids = normalize_team_member_ids(team_member_ids)
         except ValueError as exc:
@@ -2980,20 +2993,16 @@ def update_project(project_id):
             conn.close()
             return error_response(str(exc), 400)
 
-        department = get_department_by_id(department_id)
-        manager = get_user_by_id(manager_user_id)
+        department = get_department_manager_assignment(department_id)
         if not department:
             cursor.close()
             conn.close()
             return error_response("Selected department does not exist", 400)
-        if not manager or manager["role"] != "manager":
+        manager_user_id = department.get("manager_user_id")
+        if not manager_user_id:
             cursor.close()
             conn.close()
-            return error_response("Selected manager is invalid", 400)
-        if department.get("manager_user_id") != manager_user_id:
-            cursor.close()
-            conn.close()
-            return error_response("Selected manager must be assigned as the department manager", 400)
+            return error_response("Selected department must have a manager assigned first", 400)
     else:
         department = get_department_by_id(department_id) if department_id else None
         if team_member_ids is not None:
@@ -3128,7 +3137,7 @@ def delete_project(project_id):
         conn.close()
         return error_response("Project not found", 404)
 
-    cursor.execute("UPDATE tasks SET project_id=NULL WHERE project_id=%s", (project_id,))
+    cursor.execute("DELETE FROM tasks WHERE project_id=%s", (project_id,))
     cursor.execute("DELETE FROM project_team_members WHERE project_id=%s", (project_id,))
     cursor.execute("DELETE FROM projects WHERE id=%s", (project_id,))
     conn.commit()
@@ -3653,9 +3662,19 @@ def get_leave_requests():
         query += " AND lr.employee_id=%s"
         params.append(employee["id"])
     elif request_user["role"] == "manager":
-        if employee_id:
-            query += " AND lr.employee_id=%s"
-            params.append(employee_id)
+        managed_employee_ids = get_manager_employee_ids(request_user["id"])
+        if not managed_employee_ids:
+            cursor.close()
+            conn.close()
+            return jsonify([])
+        if employee_id and employee_id not in managed_employee_ids:
+            cursor.close()
+            conn.close()
+            return error_response("Managers can only view leave requests for their own department", 403)
+        target_ids = [employee_id] if employee_id else managed_employee_ids
+        placeholders = ",".join(["%s"] * len(target_ids))
+        query += f" AND lr.employee_id IN ({placeholders})"
+        params.extend(target_ids)
     elif employee_id:
         query += " AND lr.employee_id=%s"
         params.append(employee_id)
@@ -3676,53 +3695,39 @@ def get_leave_requests():
 
 @app.route("/leave-requests/pending", methods=["GET"])
 def get_pending_leave_requests():
-    request_user, error = require_manager_or_admin()
+    request_user, error = require_manager()
     if error:
         return error
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
+    managed_employee_ids = get_manager_employee_ids(request_user["id"])
+    if not managed_employee_ids:
+        cursor.close()
+        conn.close()
+        return jsonify([])
 
-    if request_user["role"] == "admin":
-        query = """
-        SELECT
-            lr.id,
-            lr.employee_id,
-            lr.start_date,
-            lr.end_date,
-            lr.leave_type,
-            lr.reason,
-            lr.status,
-            lr.created_at,
-            e.name AS employee_name,
-            e.email AS employee_email,
-            e.department AS employee_department
-        FROM leave_requests lr
-        LEFT JOIN employees e ON lr.employee_id = e.id
-        WHERE lr.status='pending'
-        ORDER BY lr.created_at DESC
-        """
-        cursor.execute(query)
-    else:
-        query = """
-        SELECT
-            lr.id,
-            lr.employee_id,
-            lr.start_date,
-            lr.end_date,
-            lr.leave_type,
-            lr.reason,
-            lr.status,
-            lr.created_at,
-            e.name AS employee_name,
-            e.email AS employee_email,
-            e.department AS employee_department
-        FROM leave_requests lr
-        LEFT JOIN employees e ON lr.employee_id = e.id
-        WHERE lr.status='pending'
-        ORDER BY lr.created_at DESC
-        """
-        cursor.execute(query)
+    placeholders = ",".join(["%s"] * len(managed_employee_ids))
+    query = f"""
+    SELECT
+        lr.id,
+        lr.employee_id,
+        lr.start_date,
+        lr.end_date,
+        lr.leave_type,
+        lr.reason,
+        lr.status,
+        lr.created_at,
+        e.name AS employee_name,
+        e.email AS employee_email,
+        e.department AS employee_department
+    FROM leave_requests lr
+    LEFT JOIN employees e ON lr.employee_id = e.id
+    WHERE lr.status='pending'
+      AND lr.employee_id IN ({placeholders})
+    ORDER BY lr.created_at DESC
+    """
+    cursor.execute(query, tuple(managed_employee_ids))
 
     requests = cursor.fetchall()
     cursor.close()
@@ -3737,8 +3742,10 @@ def submit_leave_request():
     if error:
         return error
 
+    if request_user["role"] != "employee":
+        return error_response("Only employees can submit leave requests", 403)
+
     payload = request.get_json(silent=True) or {}
-    print("submit_leave_request payload:", payload)
     try:
         employee_id = parse_int_id(payload.get("employee_id"), "Employee ID", required=True)
         start_date = parse_date_value(payload.get("start_date"), "Start date", required=True)
@@ -3760,14 +3767,11 @@ def submit_leave_request():
         employee = get_employee_for_user(request_user)
         if not employee or employee["id"] != employee_id:
             return error_response("Cannot submit leave for others", 403)
-    elif request_user["role"] == "manager" and not employee_exists(employee_id):
-        return error_response("Employee record not found", 404)
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
     try:
-        print("Before insert leave_requests")
         cursor.execute(
             """
             INSERT INTO leave_requests (employee_id, start_date, end_date, leave_type, reason)
@@ -3777,7 +3781,6 @@ def submit_leave_request():
         )
         conn.commit()
         request_id = cursor.lastrowid
-        print("After insert leave_requests, request_id:", request_id)
 
         cursor.execute(
             """
@@ -3855,10 +3858,14 @@ def update_leave_request(request_id):
             conn.close()
             return error_response("Cannot update others' leave requests", 403)
     if action == "approve":
-        if request_user["role"] not in {"admin", "manager"}:
+        if request_user["role"] != "manager":
             cursor.close()
             conn.close()
-            return error_response("Only managers and admins can approve", 403)
+            return error_response("Only department managers can approve leave requests", 403)
+        if not can_access_employee(request_user, leave_req["employee_id"]):
+            cursor.close()
+            conn.close()
+            return error_response("Managers can only approve leave for their own department", 403)
         if leave_req["status"] != "pending":
             cursor.close()
             conn.close()
@@ -3875,10 +3882,14 @@ def update_leave_request(request_id):
         )
 
     elif action == "reject":
-        if request_user["role"] not in {"admin", "manager"}:
+        if request_user["role"] != "manager":
             cursor.close()
             conn.close()
-            return error_response("Only managers and admins can reject", 403)
+            return error_response("Only department managers can reject leave requests", 403)
+        if not can_access_employee(request_user, leave_req["employee_id"]):
+            cursor.close()
+            conn.close()
+            return error_response("Managers can only reject leave for their own department", 403)
         if leave_req["status"] != "pending":
             cursor.close()
             conn.close()
@@ -3895,10 +3906,15 @@ def update_leave_request(request_id):
         )
 
     elif action == "cancel":
-        if request_user["role"] not in {"employee", "admin", "manager"}:
+        if request_user["role"] != "employee":
             cursor.close()
             conn.close()
-            return error_response("Only authenticated users can cancel leave requests", 403)
+            return error_response("Only employees can cancel their own leave requests", 403)
+        employee = get_employee_for_user(request_user)
+        if not employee or employee["id"] != leave_req["employee_id"]:
+            cursor.close()
+            conn.close()
+            return error_response("Cannot cancel others' leave requests", 403)
         if leave_req["status"] not in {"pending", "approved"}:
             cursor.close()
             conn.close()
@@ -4062,6 +4078,7 @@ def get_attendance_stats():
     WHERE MONTH(date)=%s AND YEAR(date)=%s
     """
     params = [month, year]
+    target_employee_id = employee_id
 
     if request_user["role"] == "employee":
         employee = get_employee_for_user(request_user)
@@ -4069,6 +4086,7 @@ def get_attendance_stats():
             return error_response("Employee record not found", 404)
         query += " AND employee_id=%s"
         params.append(employee["id"])
+        target_employee_id = employee["id"]
     elif request_user["role"] == "manager":
         managed_employee_ids = get_manager_employee_ids(request_user["id"])
         if not managed_employee_ids:
@@ -4086,10 +4104,11 @@ def get_attendance_stats():
             cursor.close()
             conn.close()
             return error_response("Managers can only view attendance stats for their own team", 403)
-        target_ids = [employee_id] if employee_id else managed_employee_ids
+        target_ids = [employee_id] if employee_id else [managed_employee_ids[0]]
         placeholders = ",".join(["%s"] * len(target_ids))
         query += f" AND employee_id IN ({placeholders})"
         params.extend(target_ids)
+        target_employee_id = target_ids[0]
     elif employee_id:
         query += " AND employee_id=%s"
         params.append(employee_id)
@@ -4119,6 +4138,7 @@ def get_attendance_stats():
         "half_days": stats["half_days"] or 0,
         "leave_days": stats["leave_days"] or 0,
         "attendance_rate": attendance_rate,
+        "employee_id": target_employee_id,
     })
 
 
@@ -4194,9 +4214,6 @@ def get_payroll():
     if error:
         return error
 
-    if request_user["role"] == "manager":
-        return error_response("Payroll access is restricted to admins and the employee themself", 403)
-
     employee_id = request.args.get("employee_id", type=int)
     status_filter = (request.args.get("status") or "").lower().strip()
 
@@ -4205,27 +4222,46 @@ def get_payroll():
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    query = """
-    SELECT
-        p.id,
-        p.employee_id,
-        p.pay_period_start,
-        p.pay_period_end,
-        p.base_salary,
-        p.bonus,
-        p.deductions,
-        p.net_pay,
-        p.status,
-        p.paid_at,
-        p.created_at,
-        p.updated_at,
-        e.name AS employee_name,
-        e.email AS employee_email,
-        e.department AS employee_department
-    FROM payroll p
-    LEFT JOIN employees e ON p.employee_id = e.id
-    WHERE 1=1
-    """
+    if request_user["role"] == "manager":
+        query = """
+        SELECT
+            p.id,
+            p.employee_id,
+            p.pay_period_start,
+            p.pay_period_end,
+            p.status,
+            p.paid_at,
+            p.created_at,
+            p.updated_at,
+            e.name AS employee_name,
+            e.email AS employee_email,
+            e.department AS employee_department
+        FROM payroll p
+        LEFT JOIN employees e ON p.employee_id = e.id
+        WHERE 1=1
+        """
+    else:
+        query = """
+        SELECT
+            p.id,
+            p.employee_id,
+            p.pay_period_start,
+            p.pay_period_end,
+            p.base_salary,
+            p.bonus,
+            p.deductions,
+            p.net_pay,
+            p.status,
+            p.paid_at,
+            p.created_at,
+            p.updated_at,
+            e.name AS employee_name,
+            e.email AS employee_email,
+            e.department AS employee_department
+        FROM payroll p
+        LEFT JOIN employees e ON p.employee_id = e.id
+        WHERE 1=1
+        """
     params = []
 
     if request_user["role"] == "employee":
@@ -4236,6 +4272,20 @@ def get_payroll():
             return error_response("Employee profile not found", 404)
         query += " AND p.employee_id=%s"
         params.append(employee["id"])
+    elif request_user["role"] == "manager":
+        managed_employee_ids = get_manager_employee_ids(request_user["id"])
+        if not managed_employee_ids:
+            cursor.close()
+            conn.close()
+            return jsonify([])
+        if employee_id and employee_id not in managed_employee_ids:
+            cursor.close()
+            conn.close()
+            return error_response("Managers can only view payroll for their own department", 403)
+        target_ids = [employee_id] if employee_id else managed_employee_ids
+        placeholders = ",".join(["%s"] * len(target_ids))
+        query += f" AND p.employee_id IN ({placeholders})"
+        params.extend(target_ids)
     elif employee_id:
         query += " AND p.employee_id=%s"
         params.append(employee_id)

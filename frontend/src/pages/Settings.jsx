@@ -1,19 +1,26 @@
-import { useState } from "react";
+import { useContext, useState } from "react";
 import axios from "axios";
 import {
   Box, Typography, Avatar, Button, TextField,
   Switch, IconButton, InputAdornment, Divider, Snackbar, Alert,
 } from "@mui/material";
+import { useTheme } from "@mui/material/styles";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import { API_BASE_URL, getAuthHeaders, getStoredUser, setStoredUser } from "../utils/auth";
+import {
+  ColorModeContext,
+  getMainContentSx,
+  getPageShellSx,
+  getSurfaceSx,
+  getTopbarSx,
+} from "../theme";
 import NotificationsNoneRoundedIcon from "@mui/icons-material/NotificationsNoneRounded";
 import Visibility    from "@mui/icons-material/Visibility";
 import VisibilityOff from "@mui/icons-material/VisibilityOff";
 import PersonRoundedIcon   from "@mui/icons-material/PersonRounded";
 import LockRoundedIcon     from "@mui/icons-material/LockRounded";
 import PaletteRoundedIcon  from "@mui/icons-material/PaletteRounded";
-import CheckRoundedIcon    from "@mui/icons-material/CheckRounded";
 import EditRoundedIcon     from "@mui/icons-material/EditRounded";
 
 const FIELD_SX = {
@@ -31,11 +38,10 @@ const DISABLED_SX = {
   "& .MuiOutlinedInput-root": { ...FIELD_SX["& .MuiOutlinedInput-root"], background: "#f1f5f9" },
 };
 
-const ACCENT_COLORS = ["#2563eb", "#7c3aed", "#059669", "#dc2626", "#d97706", "#0891b2"];
-
 function SectionCard({ icon, title, subtitle, children }) {
+  const theme = useTheme();
   return (
-    <Box sx={{ background: "#fff", borderRadius: "20px", p: 3.5, boxShadow: "0 2px 16px rgba(37,99,235,0.07)", border: "1.5px solid rgba(37,99,235,0.07)", mb: 3 }}>
+    <Box sx={{ ...getSurfaceSx(theme), p: 3.5, mb: 3 }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 2.5 }}>
         <Box sx={{ width: 38, height: 38, borderRadius: "11px", background: "linear-gradient(135deg,#2563eb,#38bdf8)", display: "flex", alignItems: "center", justifyContent: "center" }}>
           {icon}
@@ -53,6 +59,8 @@ function SectionCard({ icon, title, subtitle, children }) {
 
 export default function Settings() {
   const navigate = useNavigate();
+  const theme = useTheme();
+  const colorMode = useContext(ColorModeContext);
   const user = getStoredUser();
 
   // Profile state
@@ -70,8 +78,7 @@ export default function Settings() {
   const [pwdLoading,  setPwdLoading]  = useState(false);
 
   // Appearance
-  const [darkMode,     setDarkMode]     = useState(false);
-  const [accentColor,  setAccentColor]  = useState("#2563eb");
+  const [darkMode, setDarkMode] = useState(colorMode.mode === "dark");
 
   // Snackbar
   const [snack, setSnack] = useState({ open: false, message: "", severity: "success" });
@@ -127,13 +134,13 @@ export default function Settings() {
   ];
 
   return (
-    <Box sx={{ display: "flex", minHeight: "100vh", background: "#f0f4ff", fontFamily: "'DM Sans', sans-serif" }}>
+    <Box sx={getPageShellSx(theme)}>
       <Sidebar />
 
-      <Box sx={{ marginLeft: "240px", width: "100%" }}>
+      <Box sx={getMainContentSx()}>
 
         {/* Topbar */}
-        <Box sx={{ position: "sticky", top: 0, zIndex: 50, background: "rgba(240,244,255,0.88)", backdropFilter: "blur(14px)", borderBottom: "1px solid rgba(37,99,235,0.08)", px: 4, py: 2, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <Box sx={getTopbarSx(theme)}>
           <Box>
             <Typography sx={{ fontSize: 22, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.5px" }}>Settings</Typography>
             <Typography sx={{ fontSize: 12.5, color: "#64748b", mt: 0.2 }}>Manage your account preferences</Typography>
@@ -246,25 +253,18 @@ export default function Settings() {
               </Box>
               <Switch
                 checked={darkMode}
-                onChange={(e) => setDarkMode(e.target.checked)}
+                onChange={(e) => {
+                  const nextMode = e.target.checked ? "dark" : "light";
+                  setDarkMode(e.target.checked);
+                  colorMode.setMode(nextMode);
+                }}
                 sx={{ "& .MuiSwitch-switchBase.Mui-checked": { color: "#2563eb" }, "& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track": { backgroundColor: "#2563eb" } }}
               />
             </Box>
             <Divider sx={{ borderColor: "#f1f5f9", mb: 2 }} />
-            {/* Accent colour */}
-            <Typography sx={{ fontSize: 14, fontWeight: 600, color: "#1e293b", mb: 0.5 }}>Accent Colour</Typography>
-            <Typography sx={{ fontSize: 12, color: "#94a3b8", mb: 1.5 }}>Choose your preferred highlight colour</Typography>
-            <Box sx={{ display: "flex", gap: 1.5 }}>
-              {ACCENT_COLORS.map((c) => (
-                <Box
-                  key={c}
-                  onClick={() => setAccentColor(c)}
-                  sx={{ width: 32, height: 32, borderRadius: "10px", background: c, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", outline: accentColor === c ? `3px solid ${c}` : "none", outlineOffset: "2px", transition: "all 0.2s", transform: accentColor === c ? "scale(1.15)" : "scale(1)" }}
-                >
-                  {accentColor === c && <CheckRoundedIcon sx={{ fontSize: 14, color: "#fff" }} />}
-                </Box>
-              ))}
-            </Box>
+            <Typography sx={{ fontSize: 13, color: "#94a3b8" }}>
+              Theme preference is saved locally and now updates the full interface immediately.
+            </Typography>
           </SectionCard>
         </Box>
       </Box>

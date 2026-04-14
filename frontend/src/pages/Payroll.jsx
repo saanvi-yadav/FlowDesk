@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+/* eslint-disable react-hooks/set-state-in-effect */
+import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import {
   Box,
@@ -19,9 +20,16 @@ import {
   IconButton,
   Avatar,
 } from "@mui/material";
+import { useTheme } from "@mui/material/styles";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import { API_BASE_URL, getAuthHeaders, getStoredUser } from "../utils/auth";
+import {
+  getMainContentSx,
+  getPageShellSx,
+  getSurfaceSx,
+  getTopbarSx,
+} from "../theme";
 import NotificationsNoneRoundedIcon from "@mui/icons-material/NotificationsNoneRounded";
 import AddRoundedIcon from "@mui/icons-material/AddRounded";
 import EditRoundedIcon from "@mui/icons-material/EditRounded";
@@ -51,8 +59,10 @@ const emptyForm = {
 
 export default function Payroll() {
   const navigate = useNavigate();
+  const theme = useTheme();
   const user = getStoredUser();
   const isAdmin = user?.role === "admin";
+  const isManager = user?.role === "manager";
 
   const [payroll, setPayroll] = useState([]);
   const [employees, setEmployees] = useState([]);
@@ -83,7 +93,7 @@ export default function Payroll() {
     }
   };
 
-  const fetchEmployees = async () => {
+  const fetchEmployees = useCallback(async () => {
     if (!isAdmin) return;
     try {
       const response = await axios.get(`${API_BASE_URL}/employees`, {
@@ -93,12 +103,12 @@ export default function Payroll() {
     } catch {
       setEmployees([]);
     }
-  };
+  }, [isAdmin]);
 
   useEffect(() => {
     void fetchPayroll();
     void fetchEmployees();
-  }, []);
+  }, [fetchEmployees]);
 
   const handleCreate = async () => {
     try {
@@ -145,17 +155,21 @@ export default function Payroll() {
   };
 
   return (
-    <Box sx={{ display: "flex", minHeight: "100vh", background: "#f0f4ff", fontFamily: "'DM Sans', sans-serif" }}>
+    <Box sx={getPageShellSx(theme)}>
       <Sidebar />
 
-      <Box sx={{ marginLeft: "240px", width: "100%" }}>
-        <Box sx={{ position: "sticky", top: 0, zIndex: 50, background: "rgba(240,244,255,0.88)", backdropFilter: "blur(14px)", borderBottom: "1px solid rgba(37,99,235,0.08)", px: 4, py: 2, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <Box sx={getMainContentSx()}>
+        <Box sx={getTopbarSx(theme)}>
           <Box>
             <Typography sx={{ fontSize: 22, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.5px" }}>
               Payroll
             </Typography>
             <Typography sx={{ fontSize: 12.5, color: "#64748b", mt: 0.2 }}>
-              {isAdmin ? "Generate and manage employee payroll records" : "View your payroll history"}
+              {isAdmin
+                ? "Generate and manage employee payroll records"
+                : isManager
+                  ? "View payroll processing status for your department"
+                  : "View your payroll history"}
             </Typography>
           </Box>
           <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
@@ -191,7 +205,7 @@ export default function Payroll() {
               { label: "Paid", value: summary.paid, color: "#15803d" },
               { label: "Pending", value: summary.pending, color: "#a16207" },
             ].map((card) => (
-              <Box key={card.label} sx={{ background: "#fff", borderRadius: "18px", p: 2.5, boxShadow: "0 2px 14px rgba(37,99,235,0.07)", border: "1.5px solid rgba(37,99,235,0.07)" }}>
+              <Box key={card.label} sx={{ ...getSurfaceSx(theme), borderRadius: "18px", p: 2.5 }}>
                 <Typography sx={{ fontSize: 11.5, color: "#94a3b8", fontWeight: 700, mb: 0.8 }}>
                   {card.label.toUpperCase()}
                 </Typography>
@@ -202,11 +216,17 @@ export default function Payroll() {
             ))}
           </Box>
 
-          <Box sx={{ background: "#fff", borderRadius: "20px", boxShadow: "0 2px 16px rgba(37,99,235,0.07)", border: "1.5px solid rgba(37,99,235,0.07)", overflow: "hidden" }}>
+          <Box sx={{ ...getSurfaceSx(theme), overflow: "hidden" }}>
             <Table>
               <TableHead>
                 <TableRow sx={{ background: "#f8faff" }}>
-                  {["Employee", "Period", "Base Salary", "Bonus", "Deductions", "Net Pay", "Status", "Actions"].map((heading) => (
+                  {[
+                    "Employee",
+                    "Period",
+                    ...(isManager ? [] : ["Base Salary", "Bonus", "Deductions", "Net Pay"]),
+                    "Status",
+                    "Actions",
+                  ].map((heading) => (
                     <TableCell key={heading} sx={{ color: "#64748b", fontSize: 11.5, fontWeight: 700, py: 2 }}>
                       {heading.toUpperCase()}
                     </TableCell>
@@ -237,10 +257,18 @@ export default function Payroll() {
                         <TableCell sx={{ color: "#475569", fontSize: 13 }}>
                           {record.pay_period_start} to {record.pay_period_end}
                         </TableCell>
-                        <TableCell sx={{ color: "#475569", fontSize: 13 }}>{record.base_salary}</TableCell>
-                        <TableCell sx={{ color: "#475569", fontSize: 13 }}>{record.bonus}</TableCell>
-                        <TableCell sx={{ color: "#475569", fontSize: 13 }}>{record.deductions}</TableCell>
-                        <TableCell sx={{ color: "#0f172a", fontSize: 13, fontWeight: 700 }}>{record.net_pay}</TableCell>
+                        {!isManager && (
+                          <TableCell sx={{ color: "#475569", fontSize: 13 }}>{record.base_salary}</TableCell>
+                        )}
+                        {!isManager && (
+                          <TableCell sx={{ color: "#475569", fontSize: 13 }}>{record.bonus}</TableCell>
+                        )}
+                        {!isManager && (
+                          <TableCell sx={{ color: "#475569", fontSize: 13 }}>{record.deductions}</TableCell>
+                        )}
+                        {!isManager && (
+                          <TableCell sx={{ color: "#0f172a", fontSize: 13, fontWeight: 700 }}>{record.net_pay}</TableCell>
+                        )}
                         <TableCell>
                           <Chip
                             label={record.status}
@@ -258,7 +286,9 @@ export default function Payroll() {
                               <EditRoundedIcon fontSize="small" />
                             </IconButton>
                           ) : (
-                            <Typography sx={{ color: "#94a3b8", fontSize: 12 }}>View only</Typography>
+                            <Typography sx={{ color: "#94a3b8", fontSize: 12 }}>
+                              {isManager ? "Status only" : "View only"}
+                            </Typography>
                           )}
                         </TableCell>
                       </TableRow>
@@ -266,7 +296,7 @@ export default function Payroll() {
                   })
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={8} sx={{ textAlign: "center", py: 4, color: "#94a3b8" }}>
+                    <TableCell colSpan={isManager ? 4 : 8} sx={{ textAlign: "center", py: 4, color: "#94a3b8" }}>
                       No payroll records found
                     </TableCell>
                   </TableRow>

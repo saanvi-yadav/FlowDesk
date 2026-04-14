@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect */
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { Box, Typography, Avatar, Button, IconButton } from "@mui/material";

@@ -13,7 +13,6 @@ import Reports from "./pages/Reports";
 import Attendance from "./pages/Attendance";
 import LeaveRequests from "./pages/LeaveRequests";
 import Payroll from "./pages/Payroll";
-import CursorSparkle from "./components/CursorSparkle";
 import ProtectedRoute from "./components/ProtectedRoute";
 
 function App() {
@@ -23,21 +22,11 @@ function App() {
         {/* Public */}
         <Route
           path="/"
-          element={
-            <>
-              <CursorSparkle />
-              <Login />
-            </>
-          }
+          element={<Login />}
         />
         <Route
           path="/register"
-          element={
-            <>
-              <CursorSparkle />
-              <Register />
-            </>
-          }
+          element={<Register />}
         />
 
         {/* Protected */}

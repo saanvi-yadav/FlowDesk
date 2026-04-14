@@ -16,10 +16,20 @@ import {
   TextField,
   MenuItem,
   Avatar,
+  IconButton,
 } from "@mui/material";
-import { useNavigate } from "react-router-dom";
+import { useTheme } from "@mui/material/styles";
+import EditRoundedIcon from "@mui/icons-material/EditRounded";
+import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import Sidebar from "../components/Sidebar";
 import { getAuthHeaders, getStoredUser, API_BASE_URL } from "../utils/auth";
+import { getMainContentSx, getPageShellSx, getTopbarSx } from "../theme";
+import {
+  createProjectRequest,
+  fetchDepartmentManager,
+  fetchProjects,
+  updateProjectRequest,
+} from "../services/projectService";
 
 const FIELD_SX = {
   "& .MuiOutlinedInput-root": {
@@ -34,16 +44,16 @@ const FIELD_SX = {
 };
 
 export default function Projects() {
-  const navigate = useNavigate();
+  const theme = useTheme();
   const user = getStoredUser();
   const isAdmin = user?.role === "admin";
   const isManager = user?.role === "manager";
 
   const [projects, setProjects] = useState([]);
   const [departments, setDepartments] = useState([]);
-  const [managers, setManagers] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [teamOpen, setTeamOpen] = useState(false);
   const [activeProject, setActiveProject] = useState(null);
   const [teamMembers, setTeamMembers] = useState([]);
@@ -52,26 +62,31 @@ export default function Projects() {
     project_name: "",
     description: "",
     department_id: "",
-    manager_user_id: "",
+    manager_user_id: null,
+    manager_name: "",
+    manager_email: "",
+  });
+  const [editForm, setEditForm] = useState({
+    id: null,
+    project_name: "",
+    description: "",
+    department_id: "",
+    manager_user_id: null,
+    manager_name: "",
+    manager_email: "",
   });
 
   const loadData = async () => {
     const requests = [
-      axios.get(`${API_BASE_URL}/projects`, { headers: getAuthHeaders() }),
+      fetchProjects(),
       axios.get(`${API_BASE_URL}/departments`, { headers: getAuthHeaders() }),
       axios.get(`${API_BASE_URL}/employees`, { headers: getAuthHeaders() }),
     ];
-    if (isAdmin) {
-      requests.push(
-        axios.get(`${API_BASE_URL}/managers`, { headers: getAuthHeaders() }),
-      );
-    }
 
     const responses = await Promise.all(requests);
     setProjects(responses[0].data);
     setDepartments(responses[1].data);
     setEmployees(responses[2].data);
-    setManagers(isAdmin ? responses[3].data : []);
   };
 
   useEffect(() => {
@@ -80,28 +95,21 @@ export default function Projects() {
     const run = async () => {
       try {
         const requests = [
-          axios.get(`${API_BASE_URL}/projects`, { headers: getAuthHeaders() }),
+          fetchProjects(),
           axios.get(`${API_BASE_URL}/departments`, { headers: getAuthHeaders() }),
           axios.get(`${API_BASE_URL}/employees`, { headers: getAuthHeaders() }),
         ];
-        if (isAdmin) {
-          requests.push(
-            axios.get(`${API_BASE_URL}/managers`, { headers: getAuthHeaders() }),
-          );
-        }
         const responses = await Promise.all(requests);
         if (!ignore) {
           setProjects(responses[0].data);
           setDepartments(responses[1].data);
           setEmployees(responses[2].data);
-          setManagers(isAdmin ? responses[3].data : []);
         }
       } catch {
         if (!ignore) {
           setProjects([]);
           setDepartments([]);
           setEmployees([]);
-          setManagers([]);
         }
       }
     };
@@ -110,7 +118,43 @@ export default function Projects() {
     return () => {
       ignore = true;
     };
-  }, [isAdmin]);
+  }, []);
+
+  const syncDepartmentManager = async (departmentId, setter) => {
+    if (!departmentId) {
+      setter((prev) => ({
+        ...prev,
+        department_id: "",
+        manager_user_id: null,
+        manager_name: "",
+        manager_email: "",
+      }));
+      return;
+    }
+
+    try {
+      const response = await fetchDepartmentManager(departmentId);
+      setter((prev) => ({
+        ...prev,
+        department_id: departmentId,
+        manager_user_id: response.data.manager_user_id,
+        manager_name: response.data.manager_name || "Unassigned",
+        manager_email: response.data.manager_email || "",
+      }));
+    } catch (error) {
+      setter((prev) => ({
+        ...prev,
+        department_id: departmentId,
+        manager_user_id: null,
+        manager_name: "",
+        manager_email: "",
+      }));
+      window.alert(
+        error.response?.data?.error ||
+          "Selected department must have a manager assigned first.",
+      );
+    }
+  };
 
   const createProject = async () => {
     if (!form.project_name.trim()) {
@@ -118,24 +162,73 @@ export default function Projects() {
       return;
     }
     if (!form.department_id || !form.manager_user_id) {
-      window.alert("Department and manager are required.");
+      window.alert("Department must have an assigned manager before creating a project.");
       return;
     }
 
     try {
-      await axios.post(`${API_BASE_URL}/projects`, form, {
-        headers: getAuthHeaders(),
+      await createProjectRequest({
+        project_name: form.project_name,
+        description: form.description,
+        department_id: form.department_id,
       });
       setCreateOpen(false);
       setForm({
         project_name: "",
         description: "",
         department_id: "",
-        manager_user_id: "",
+        manager_user_id: null,
+        manager_name: "",
+        manager_email: "",
       });
       await loadData();
     } catch (error) {
       window.alert(error.response?.data?.error || "Failed to create project.");
+    }
+  };
+
+  const openEditDialog = (project) => {
+    setEditForm({
+      id: project.id,
+      project_name: project.project_name,
+      description: project.description || "",
+      department_id: project.department_id || "",
+      manager_user_id: project.manager_user_id || null,
+      manager_name: project.manager_name || "",
+      manager_email: project.manager_email || "",
+    });
+    setEditOpen(true);
+  };
+
+  const updateProject = async () => {
+    if (!editForm.project_name.trim() || !editForm.department_id || !editForm.manager_user_id) {
+      window.alert("Selected department must have an assigned manager.");
+      return;
+    }
+    try {
+      await updateProjectRequest(editForm.id, {
+        project_name: editForm.project_name,
+        description: editForm.description,
+        department_id: editForm.department_id,
+      });
+      setEditOpen(false);
+      await loadData();
+    } catch (error) {
+      window.alert(error.response?.data?.error || "Failed to update project.");
+    }
+  };
+
+  const deleteProject = async (project) => {
+    if (!window.confirm(`Delete "${project.project_name}" and its linked tasks?`)) {
+      return;
+    }
+    try {
+      await axios.delete(`${API_BASE_URL}/projects/${project.id}`, {
+        headers: getAuthHeaders(),
+      });
+      await loadData();
+    } catch (error) {
+      window.alert(error.response?.data?.error || "Failed to delete project.");
     }
   };
 
@@ -185,32 +278,11 @@ export default function Projects() {
   });
 
   return (
-    <Box
-      sx={{
-        display: "flex",
-        minHeight: "100vh",
-        background: "#f0f4ff",
-        fontFamily: "'DM Sans', sans-serif",
-      }}
-    >
+    <Box sx={getPageShellSx(theme)}>
       <Sidebar />
 
-      <Box sx={{ marginLeft: "240px", width: "100%" }}>
-        <Box
-          sx={{
-            position: "sticky",
-            top: 0,
-            zIndex: 50,
-            background: "rgba(240,244,255,0.88)",
-            backdropFilter: "blur(14px)",
-            borderBottom: "1px solid rgba(37,99,235,0.08)",
-            px: 4,
-            py: 2,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
+      <Box sx={getMainContentSx()}>
+        <Box sx={getTopbarSx(theme)}>
           <Box>
             <Typography sx={{ fontSize: 22, fontWeight: 800, color: "#0f172a" }}>
               Projects
@@ -297,15 +369,35 @@ export default function Projects() {
                       {project.created_by_name || "Unknown"}
                     </TableCell>
                     <TableCell>
-                      {(isAdmin || isManager) && (
-                        <Button
-                          size="small"
-                          onClick={() => openTeamDialog(project)}
-                          sx={{ textTransform: "none", fontWeight: 700, color: "#2563eb" }}
-                        >
-                          Manage Team
-                        </Button>
-                      )}
+                      <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+                        {(isAdmin || isManager) && (
+                          <Button
+                            size="small"
+                            onClick={() => openTeamDialog(project)}
+                            sx={{ textTransform: "none", fontWeight: 700, color: "#2563eb" }}
+                          >
+                            Manage Team
+                          </Button>
+                        )}
+                        {isAdmin && (
+                          <IconButton
+                            size="small"
+                            onClick={() => openEditDialog(project)}
+                            sx={{ color: "#2563eb", background: "#eff6ff", borderRadius: "8px" }}
+                          >
+                            <EditRoundedIcon fontSize="small" />
+                          </IconButton>
+                        )}
+                        {isAdmin && (
+                          <IconButton
+                            size="small"
+                            onClick={() => deleteProject(project)}
+                            sx={{ color: "#dc2626", background: "#fff1f2", borderRadius: "8px" }}
+                          >
+                            <DeleteOutlineRoundedIcon fontSize="small" />
+                          </IconButton>
+                        )}
+                      </Box>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -350,7 +442,9 @@ export default function Projects() {
               select
               label="Department"
               value={form.department_id}
-              onChange={(e) => setForm((prev) => ({ ...prev, department_id: e.target.value }))}
+              onChange={(e) => {
+                void syncDepartmentManager(e.target.value, setForm);
+              }}
               sx={FIELD_SX}
             >
               {departments.map((department) => (
@@ -360,18 +454,17 @@ export default function Projects() {
               ))}
             </TextField>
             <TextField
-              select
-              label="Manager"
-              value={form.manager_user_id}
-              onChange={(e) => setForm((prev) => ({ ...prev, manager_user_id: e.target.value }))}
+              label="Department Manager"
+              value={
+                form.department_id
+                  ? form.manager_name
+                    ? `${form.manager_name}${form.manager_email ? ` (${form.manager_email})` : ""}`
+                    : "No manager assigned"
+                  : "Select a department first"
+              }
+              InputProps={{ readOnly: true }}
               sx={FIELD_SX}
-            >
-              {managers.map((manager) => (
-                <MenuItem key={manager.id} value={manager.id}>
-                  {manager.name} ({manager.email})
-                </MenuItem>
-              ))}
-            </TextField>
+            />
           </Box>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
@@ -389,6 +482,78 @@ export default function Projects() {
             }}
           >
             Create
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        PaperProps={{ sx: { borderRadius: "20px", width: 460, p: 1 } }}
+      >
+        <DialogTitle sx={{ fontWeight: 800, fontSize: 17, color: "#0f172a" }}>
+          Edit Project
+        </DialogTitle>
+        <DialogContent sx={{ pt: 2 }}>
+          <Box sx={{ display: "grid", gap: 1.5 }}>
+            <TextField
+              label="Project Name"
+              value={editForm.project_name}
+              onChange={(e) => setEditForm((prev) => ({ ...prev, project_name: e.target.value }))}
+              sx={FIELD_SX}
+            />
+            <TextField
+              label="Description"
+              multiline
+              minRows={3}
+              value={editForm.description}
+              onChange={(e) => setEditForm((prev) => ({ ...prev, description: e.target.value }))}
+              sx={FIELD_SX}
+            />
+            <TextField
+              select
+              label="Department"
+              value={editForm.department_id}
+              onChange={(e) => {
+                void syncDepartmentManager(e.target.value, setEditForm);
+              }}
+              sx={FIELD_SX}
+            >
+              {departments.map((department) => (
+                <MenuItem key={department.id} value={department.id}>
+                  {department.name}
+                </MenuItem>
+              ))}
+            </TextField>
+            <TextField
+              label="Department Manager"
+              value={
+                editForm.department_id
+                  ? editForm.manager_name
+                    ? `${editForm.manager_name}${editForm.manager_email ? ` (${editForm.manager_email})` : ""}`
+                    : "No manager assigned"
+                  : "Select a department first"
+              }
+              InputProps={{ readOnly: true }}
+              sx={FIELD_SX}
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setEditOpen(false)} sx={{ textTransform: "none", color: "#64748b" }}>
+            Cancel
+          </Button>
+          <Button
+            onClick={updateProject}
+            variant="contained"
+            sx={{
+              borderRadius: "10px",
+              textTransform: "none",
+              fontWeight: 700,
+              background: "linear-gradient(90deg,#2563eb,#38bdf8)",
+            }}
+          >
+            Update
           </Button>
         </DialogActions>
       </Dialog>

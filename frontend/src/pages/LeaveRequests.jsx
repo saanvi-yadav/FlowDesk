@@ -23,9 +23,11 @@ import {
   Tabs,
   Tab,
 } from "@mui/material";
+import { useTheme } from "@mui/material/styles";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import { API_BASE_URL, getAuthHeaders, getStoredUser } from "../utils/auth";
+import { getMainContentSx, getPageShellSx, getTopbarSx } from "../theme";
 import NotificationsNoneRoundedIcon from "@mui/icons-material/NotificationsNoneRounded";
 import AddRoundedIcon from "@mui/icons-material/AddRounded";
 import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
@@ -80,11 +82,12 @@ const LeaveBalanceCard = ({ type, data }) => {
 
 export default function LeaveRequests() {
   const navigate = useNavigate();
+  const theme = useTheme();
   const user = getStoredUser();
+  const isManager = user?.role === "manager";
 
   const [requests, setRequests] = useState([]);
   const [pendingRequests, setPendingRequests] = useState([]);
-  const [employees, setEmployees] = useState([]);
   const [currentEmployee, setCurrentEmployee] = useState(null);
   const [leaveBalance, setLeaveBalance] = useState({});
   const [search, setSearch] = useState("");
@@ -123,7 +126,7 @@ export default function LeaveRequests() {
   };
 
   const fetchPendingRequests = useCallback(async () => {
-    if (user?.role !== "admin" && user?.role !== "manager") return;
+    if (user?.role !== "manager") return;
     try {
       const response = await axios.get(
         `${API_BASE_URL}/leave-requests/pending`,
@@ -158,27 +161,14 @@ export default function LeaveRequests() {
     }
   }, [user?.role]);
 
-  const fetchEmployees = useCallback(async () => {
-    if (user?.role !== "admin" && user?.role !== "manager") return;
-    try {
-      const response = await axios.get(`${API_BASE_URL}/employees`, {
-        headers: getAuthHeaders(),
-      });
-      setEmployees(response.data);
-    } catch {
-      setEmployees([]);
-    }
-  }, [user?.role]);
-
   useEffect(() => {
     const loadData = async () => {
       await fetchLeaveRequests();
       await fetchPendingRequests();
       await fetchLeaveBalance();
-      await fetchEmployees();
     };
     loadData();
-  }, [user?.role, fetchPendingRequests, fetchLeaveBalance, fetchEmployees]);
+  }, [user?.role, fetchPendingRequests, fetchLeaveBalance]);
 
   const handleSubmitLeaveRequest = async () => {
     if (!requestForm.start_date || !requestForm.end_date) {
@@ -264,32 +254,11 @@ export default function LeaveRequests() {
   });
 
   return (
-    <Box
-      sx={{
-        display: "flex",
-        minHeight: "100vh",
-        background: "#f0f4ff",
-        fontFamily: "'DM Sans', sans-serif",
-      }}
-    >
+    <Box sx={getPageShellSx(theme)}>
       <Sidebar />
 
-      <Box sx={{ marginLeft: "240px", width: "100%" }}>
-        <Box
-          sx={{
-            position: "sticky",
-            top: 0,
-            zIndex: 50,
-            background: "rgba(240,244,255,0.88)",
-            backdropFilter: "blur(14px)",
-            borderBottom: "1px solid rgba(37,99,235,0.08)",
-            px: 4,
-            py: 2,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
+      <Box sx={getMainContentSx()}>
+        <Box sx={getTopbarSx(theme)}>
           <Box>
             <Typography
               sx={{
@@ -385,7 +354,7 @@ export default function LeaveRequests() {
 
           {/* Tabs for Manager */}
           {(user?.role === "admin" || user?.role === "manager") && (
-            <Tabs
+            isManager ? <Tabs
               value={tabValue}
               onChange={(e, val) => setTabValue(val)}
               sx={{
@@ -401,7 +370,7 @@ export default function LeaveRequests() {
             >
               <Tab label={`My Requests (${requests.length})`} />
               <Tab label={`Pending Review (${pendingRequests.length})`} />
-            </Tabs>
+            </Tabs> : null
           )}
 
           {/* Filters */}
@@ -627,9 +596,7 @@ export default function LeaveRequests() {
                           {req.reason || "—"}
                         </TableCell>
                         <TableCell sx={{ borderBottom: "1px solid #f1f5f9" }}>
-                          {tabValue === 1 &&
-                          (user?.role === "admin" ||
-                            user?.role === "manager") ? (
+                          {tabValue === 1 && isManager ? (
                             <Box sx={{ display: "flex", gap: 1 }}>
                               <Button
                                 onClick={() => openReview(req, "approve")}

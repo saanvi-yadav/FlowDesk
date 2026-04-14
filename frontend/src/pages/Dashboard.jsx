@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { Box, Typography, Avatar, Chip } from "@mui/material";
+import { useTheme } from "@mui/material/styles";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import StatCard from "../components/StatCard";
 import { API_BASE_URL, getAuthHeaders, getStoredUser } from "../utils/auth";
+import { getMainContentSx, getPageShellSx, getTopbarSx } from "../theme";
 import NotificationsNoneRoundedIcon from "@mui/icons-material/NotificationsNoneRounded";
 import PeopleOutlineRoundedIcon from "@mui/icons-material/PeopleOutlineRounded";
 import AssignmentTurnedInRoundedIcon from "@mui/icons-material/AssignmentTurnedInRounded";
@@ -29,6 +31,7 @@ function MetricCard({ icon, title, value }) {
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const theme = useTheme();
   const user = getStoredUser();
   const [stats, setStats] = useState({ employees: 0, tasks: 0, projects: 0, completed: 0, attendance_records: 0, leave_requests: 0, payroll_records: 0 });
   const [insights, setInsights] = useState({
@@ -81,11 +84,11 @@ export default function Dashboard() {
   const completionRate = stats.tasks > 0 ? Math.round((stats.completed / stats.tasks) * 100) : 0;
 
   return (
-    <Box sx={{ display: "flex", minHeight: "100vh", background: "#f0f4ff", fontFamily: "'DM Sans', sans-serif" }}>
+    <Box sx={getPageShellSx(theme)}>
       <Sidebar />
 
-      <Box sx={{ marginLeft: "240px", width: "100%" }}>
-        <Box sx={{ position: "sticky", top: 0, zIndex: 50, background: "rgba(240,244,255,0.88)", backdropFilter: "blur(14px)", borderBottom: "1px solid rgba(37,99,235,0.08)", px: 4, py: 2, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <Box sx={getMainContentSx()}>
+        <Box sx={getTopbarSx(theme)}>
           <Box>
             <Typography sx={{ fontSize: 22, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.5px" }}>
               Dashboard

@@ -21,9 +21,11 @@ import {
   Card,
   Grid,
 } from "@mui/material";
+import { useTheme } from "@mui/material/styles";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import { API_BASE_URL, getAuthHeaders, getStoredUser } from "../utils/auth";
+import { getMainContentSx, getPageShellSx, getTopbarSx } from "../theme";
 import NotificationsNoneRoundedIcon from "@mui/icons-material/NotificationsNoneRounded";
 import AddRoundedIcon from "@mui/icons-material/AddRounded";
 import EditRoundedIcon from "@mui/icons-material/EditRounded";
@@ -68,6 +70,7 @@ const StatBox = ({ label, value, icon, color }) => {
 
 export default function Attendance() {
   const navigate = useNavigate();
+  const theme = useTheme();
   const user = getStoredUser();
 
   const [attendance, setAttendance] = useState([]);
@@ -128,8 +131,12 @@ export default function Attendance() {
 
   const fetchStats = useCallback(async () => {
     try {
+      const statsEmployeeId =
+        user?.role === "manager" && employeeFilter !== "ALL"
+          ? `&employee_id=${employeeFilter}`
+          : "";
       const response = await axios.get(
-        `${API_BASE_URL}/attendance/stats?month=${currentMonth}&year=${currentYear}`,
+        `${API_BASE_URL}/attendance/stats?month=${currentMonth}&year=${currentYear}${statsEmployeeId}`,
         { headers: getAuthHeaders() },
       );
       setStats(response.data);
@@ -143,18 +150,21 @@ export default function Attendance() {
         attendance_rate: 0,
       });
     }
-  }, [currentMonth, currentYear]);
+  }, [currentMonth, currentYear, employeeFilter, user?.role]);
 
-  const fetchEmployees = async () => {
+  const fetchEmployees = useCallback(async () => {
     try {
       const response = await axios.get(`${API_BASE_URL}/employees`, {
         headers: getAuthHeaders(),
       });
       setEmployees(response.data);
+      if (user?.role === "manager" && employeeFilter === "ALL" && response.data.length > 0) {
+        setEmployeeFilter(String(response.data[0].id));
+      }
     } catch {
       setEmployees([]);
     }
-  };
+  }, [employeeFilter, user?.role]);
 
   const fetchCurrentEmployee = useCallback(async () => {
     if (user?.role !== "employee") return;
@@ -178,15 +188,15 @@ export default function Attendance() {
   useEffect(() => {
     const loadData = async () => {
       await fetchAttendance();
-      await fetchStats();
       if (user?.role === "admin" || user?.role === "manager") {
         await fetchEmployees();
       } else {
         await fetchCurrentEmployee();
       }
+      await fetchStats();
     };
     loadData();
-  }, [user?.role, fetchStats, fetchCurrentEmployee]);
+  }, [user?.role, fetchEmployees, fetchStats, fetchCurrentEmployee]);
 
   const handleMarkAttendance = async () => {
     if (!markForm.employee_id || !markForm.date) {
@@ -258,32 +268,11 @@ export default function Attendance() {
   });
 
   return (
-    <Box
-      sx={{
-        display: "flex",
-        minHeight: "100vh",
-        background: "#f0f4ff",
-        fontFamily: "'DM Sans', sans-serif",
-      }}
-    >
+    <Box sx={getPageShellSx(theme)}>
       <Sidebar />
 
-      <Box sx={{ marginLeft: "240px", width: "100%" }}>
-        <Box
-          sx={{
-            position: "sticky",
-            top: 0,
-            zIndex: 50,
-            background: "rgba(240,244,255,0.88)",
-            backdropFilter: "blur(14px)",
-            borderBottom: "1px solid rgba(37,99,235,0.08)",
-            px: 4,
-            py: 2,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
+      <Box sx={getMainContentSx()}>
+        <Box sx={getTopbarSx(theme)}>
           <Box>
             <Typography
               sx={{
@@ -387,7 +376,7 @@ export default function Attendance() {
             </Grid>
             <Grid item xs={12} sm={6} md={2.4}>
               <StatBox
-                label="Attendance %"
+                label={user?.role === "manager" ? "Employee %" : "Attendance %"}
                 value={`${stats.attendance_rate}%`}
                 icon={<CheckCircleRoundedIcon />}
                 color="#7c3aed"
