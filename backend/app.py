@@ -5,7 +5,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from db import get_db_connection
 from collections import Counter
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import json
 import os
@@ -123,6 +123,47 @@ def serialize_date(value):
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     return value
+
+
+def serialize_time_value(value):
+    if isinstance(value, timedelta):
+        total_seconds = int(value.total_seconds())
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    if hasattr(value, "strftime"):
+        return value.strftime("%H:%M:%S")
+
+    return value
+
+
+def normalize_attendance_record(record):
+    normalized = dict(record)
+    normalized["date"] = serialize_date(normalized.get("date"))
+    normalized["created_at"] = serialize_date(normalized.get("created_at"))
+    normalized["check_in"] = serialize_time_value(normalized.get("check_in"))
+    normalized["check_out"] = serialize_time_value(normalized.get("check_out"))
+    return normalized
+
+
+def get_table_columns(table_name):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT COLUMN_NAME
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = %s
+        """,
+        (table_name,),
+    )
+    columns = {row["COLUMN_NAME"] for row in cursor.fetchall()}
+    cursor.close()
+    conn.close()
+    return columns
 
 
 def hash_token(token):
@@ -302,7 +343,7 @@ def get_employee_by_id(employee_id):
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
         """
-        SELECT id, user_id, name, email, role, department
+        SELECT id, user_id, name, email, role, department_id, department
         FROM employees
         WHERE id=%s
         LIMIT 1
@@ -315,12 +356,103 @@ def get_employee_by_id(employee_id):
     return employee
 
 
+def get_employee_by_user_id(user_id):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT id, user_id, name, email, role, department_id, department
+        FROM employees
+        WHERE user_id=%s
+        LIMIT 1
+        """,
+        (user_id,),
+    )
+    employee = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return employee
+
+
+def get_department_by_id(department_id):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT
+            departments.id,
+            departments.name,
+            departments.description,
+            departments.manager_user_id,
+            departments.created_at,
+            users.name AS manager_name,
+            users.email AS manager_email
+        FROM departments
+        LEFT JOIN users ON departments.manager_user_id = users.id
+        WHERE departments.id=%s
+        LIMIT 1
+        """,
+        (department_id,),
+    )
+    department = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return department
+
+
+def get_department_by_name(department_name):
+    if not department_name:
+        return None
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT
+            departments.id,
+            departments.name,
+            departments.description,
+            departments.manager_user_id,
+            departments.created_at,
+            users.name AS manager_name,
+            users.email AS manager_email
+        FROM departments
+        LEFT JOIN users ON departments.manager_user_id = users.id
+        WHERE departments.name=%s
+        LIMIT 1
+        """,
+        (department_name,),
+    )
+    department = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return department
+
+
+def get_departments_for_manager(user_id):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT id, name FROM departments WHERE manager_user_id=%s ORDER BY name ASC",
+        (user_id,),
+    )
+    departments = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return departments
+
+
+def get_department_for_manager(user_id):
+    departments = get_departments_for_manager(user_id)
+    return departments[0] if departments else None
+
+
 def get_project_by_id(project_id):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
         """
-        SELECT id, project_name, description, created_by, created_at
+        SELECT id, project_name, description, department_id, manager_user_id, created_by, created_at
         FROM projects
         WHERE id=%s
         LIMIT 1
@@ -336,7 +468,7 @@ def get_project_by_id(project_id):
 def get_manager_project_ids(user_id):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT id FROM projects WHERE created_by=%s", (user_id,))
+    cursor.execute("SELECT id FROM projects WHERE manager_user_id=%s", (user_id,))
     project_ids = [row["id"] for row in cursor.fetchall()]
     cursor.close()
     conn.close()
@@ -344,26 +476,199 @@ def get_manager_project_ids(user_id):
 
 
 def get_manager_employee_ids(user_id):
-    project_ids = get_manager_project_ids(user_id)
-    if not project_ids:
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT DISTINCT employees.id
+        FROM employees
+        INNER JOIN departments ON (
+            employees.department_id = departments.id
+            OR (employees.department_id IS NULL AND employees.department = departments.name)
+        )
+        WHERE departments.manager_user_id=%s
+        ORDER BY employees.id
+        """,
+        (user_id,),
+    )
+    employee_ids = [row["id"] for row in cursor.fetchall()]
+    cursor.close()
+    conn.close()
+    return employee_ids
+
+
+def get_project_team_member_ids(project_id):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT employee_id
+        FROM project_team_members
+        WHERE project_id=%s
+        ORDER BY employee_id
+        """,
+        (project_id,),
+    )
+    employee_ids = [row["employee_id"] for row in cursor.fetchall()]
+    cursor.close()
+    conn.close()
+    return employee_ids
+
+
+def get_department_employee_ids(department_name):
+    if not department_name:
         return []
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    placeholders = ",".join(["%s"] * len(project_ids))
     cursor.execute(
-        f"""
-        SELECT DISTINCT assigned_to
-        FROM tasks
-        WHERE assigned_to IS NOT NULL
-        AND project_id IN ({placeholders})
+        """
+        SELECT id
+        FROM employees
+        WHERE department=%s
+        ORDER BY id ASC
         """,
-        tuple(project_ids),
+        (department_name,),
     )
-    employee_ids = [row["assigned_to"] for row in cursor.fetchall()]
+    employee_ids = [row["id"] for row in cursor.fetchall()]
     cursor.close()
     conn.close()
     return employee_ids
+
+
+def get_department_employee_ids_by_id(department_id):
+    if not department_id:
+        return []
+
+    department = get_department_by_id(department_id)
+    if not department:
+        return []
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT id
+        FROM employees
+        WHERE department_id=%s
+           OR (department_id IS NULL AND department=%s)
+        ORDER BY id ASC
+        """,
+        (department_id, department["name"]),
+    )
+    employee_ids = [row["id"] for row in cursor.fetchall()]
+    cursor.close()
+    conn.close()
+    return employee_ids
+
+
+def normalize_team_member_ids(team_member_ids):
+    normalized_ids = []
+    for employee_id in team_member_ids or []:
+        parsed_id = parse_int_id(employee_id, "Team member", required=True)
+        if parsed_id not in normalized_ids:
+            normalized_ids.append(parsed_id)
+    return normalized_ids
+
+
+def validate_team_members_for_department(department_name, team_member_ids):
+    normalized_ids = normalize_team_member_ids(team_member_ids)
+    if not normalized_ids:
+        return []
+
+    allowed_employee_ids = set(get_department_employee_ids(department_name))
+    invalid_ids = [employee_id for employee_id in normalized_ids if employee_id not in allowed_employee_ids]
+    if invalid_ids:
+        raise ValueError("All project team members must belong to the selected department")
+
+    return normalized_ids
+
+
+def validate_team_members_for_department_id(department_id, team_member_ids):
+    normalized_ids = normalize_team_member_ids(team_member_ids)
+    if not normalized_ids:
+        return []
+
+    allowed_employee_ids = set(get_department_employee_ids_by_id(department_id))
+    invalid_ids = [employee_id for employee_id in normalized_ids if employee_id not in allowed_employee_ids]
+    if invalid_ids:
+        raise ValueError("All project team members must belong to the selected department")
+
+    return normalized_ids
+
+
+def sync_project_team_members(project_id, team_member_ids, assigned_by_user_id, *, conn):
+    cursor = conn.cursor()
+    normalized_ids = list(team_member_ids or [])
+
+    cursor.execute("DELETE FROM project_team_members WHERE project_id=%s", (project_id,))
+    if normalized_ids:
+        team_rows = [(project_id, employee_id, assigned_by_user_id) for employee_id in normalized_ids]
+        cursor.executemany(
+            """
+            INSERT INTO project_team_members (project_id, employee_id, assigned_by)
+            VALUES (%s, %s, %s)
+            """,
+            team_rows,
+        )
+
+        placeholders = ",".join(["%s"] * len(normalized_ids))
+        cursor.execute(
+            f"""
+            UPDATE tasks
+            SET assigned_to=NULL
+            WHERE project_id=%s
+              AND assigned_to IS NOT NULL
+              AND assigned_to NOT IN ({placeholders})
+            """,
+            (project_id, *normalized_ids),
+        )
+    else:
+        cursor.execute(
+            """
+            UPDATE tasks
+            SET assigned_to=NULL
+            WHERE project_id=%s
+            """,
+            (project_id,),
+        )
+
+    cursor.close()
+
+
+def sync_task_assignment(task_id, employee_id, manager_user_id, *, conn):
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM task_assignments WHERE task_id=%s", (task_id,))
+    if employee_id and manager_user_id:
+        cursor.execute(
+            """
+            INSERT INTO task_assignments (task_id, employee_id, assigned_by_manager)
+            VALUES (%s, %s, %s)
+            """,
+            (task_id, employee_id, manager_user_id),
+        )
+    cursor.close()
+
+
+def employee_is_in_project_team(project_id, employee_id):
+    if not project_id or not employee_id:
+        return False
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT 1
+        FROM project_team_members
+        WHERE project_id=%s AND employee_id=%s
+        LIMIT 1
+        """,
+        (project_id, employee_id),
+    )
+    result = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return result is not None
 
 
 def can_access_project(request_user, project_id):
@@ -402,18 +707,25 @@ def get_task_detail(task_id):
             tasks.status,
             tasks.priority,
             tasks.deadline,
+            tasks.manager_user_id,
+            tasks.assigned_by_admin_user_id,
             tasks.assigned_to,
             tasks.project_id,
             employees.name AS employee_name,
             employees.department AS employee_department,
             employees.user_id AS employee_user_id,
             projects.project_name,
-            projects.created_by AS project_owner_id
+            projects.created_by AS project_owner_id,
+            projects.department_id,
+            projects.manager_user_id AS project_manager_user_id,
+            manager_users.name AS manager_name
         FROM tasks
         LEFT JOIN employees
         ON tasks.assigned_to = employees.id
         LEFT JOIN projects
         ON tasks.project_id = projects.id
+        LEFT JOIN users AS manager_users
+        ON tasks.manager_user_id = manager_users.id
         WHERE tasks.id=%s
         LIMIT 1
         """,
@@ -425,6 +737,47 @@ def get_task_detail(task_id):
     return task
 
 
+def build_project_list_query(request_user):
+    query = """
+    SELECT DISTINCT
+        projects.id,
+        projects.project_name,
+        projects.description,
+        projects.department_id,
+        projects.manager_user_id,
+        projects.created_by,
+        projects.created_at,
+        users.name AS created_by_name,
+        departments.name AS department_name,
+        managers.name AS manager_name,
+        managers.email AS manager_email
+    FROM projects
+    LEFT JOIN users ON projects.created_by = users.id
+    LEFT JOIN departments ON projects.department_id = departments.id
+    LEFT JOIN users AS managers ON projects.manager_user_id = managers.id
+    """
+    params = []
+
+    if request_user["role"] == "manager":
+        query += " WHERE projects.manager_user_id=%s"
+        params.append(request_user["id"])
+    elif request_user["role"] == "employee":
+        employee = get_employee_for_user(request_user)
+        if not employee:
+            return None, []
+        query += """
+        LEFT JOIN project_team_members
+        ON project_team_members.project_id = projects.id
+        LEFT JOIN tasks AS employee_tasks
+        ON employee_tasks.project_id = projects.id
+        WHERE project_team_members.employee_id=%s OR employee_tasks.assigned_to=%s
+        """
+        params.extend([employee["id"], employee["id"]])
+
+    query += " ORDER BY projects.created_at DESC, projects.id DESC"
+    return query, params
+
+
 def can_access_task(request_user, task):
     if request_user["role"] == "admin":
         return True
@@ -433,7 +786,14 @@ def can_access_task(request_user, task):
         employee = get_employee_for_user(request_user)
         return bool(employee and task and task.get("assigned_to") == employee["id"])
 
-    return bool(task and task.get("project_id") in get_manager_project_ids(request_user["id"]))
+    return bool(
+        task
+        and (
+            task.get("manager_user_id") == request_user["id"]
+            or task.get("project_manager_user_id") == request_user["id"]
+            or task.get("project_id") in get_manager_project_ids(request_user["id"])
+        )
+    )
 
 
 def create_notification(user_id, title, body, notification_type="info", *, conn=None):
@@ -470,17 +830,43 @@ def create_audit_log(actor_user_id, action_type, entity_type, entity_id=None, de
     try:
         cursor.execute(
             """
-            INSERT INTO audit_logs (actor_user_id, action_type, entity_type, entity_id, details)
-            VALUES (%s, %s, %s, %s, %s)
-            """,
-            (
-                actor_user_id,
-                action_type,
-                entity_type,
-                entity_id,
-                json.dumps(details or {}),
-            ),
+            SELECT COLUMN_NAME
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE()
+              AND table_name = 'audit_logs'
+            """
         )
+        columns = {row[0] for row in cursor.fetchall()}
+        payload = json.dumps(details or {})
+
+        if {"actor_user_id", "action_type", "entity_type", "entity_id", "details"}.issubset(columns):
+            cursor.execute(
+                """
+                INSERT INTO audit_logs (actor_user_id, action_type, entity_type, entity_id, details)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    actor_user_id,
+                    action_type,
+                    entity_type,
+                    entity_id,
+                    payload,
+                ),
+            )
+        elif {"event_type", "entity", "entity_id", "data"}.issubset(columns):
+            cursor.execute(
+                """
+                INSERT INTO audit_logs (event_type, entity, entity_id, data)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    action_type,
+                    entity_type,
+                    entity_id,
+                    payload,
+                ),
+            )
+
         if own_connection:
             conn.commit()
     except mysql.connector.Error:
@@ -497,7 +883,7 @@ def get_employee_for_user(request_user):
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
         """
-        SELECT employees.id, employees.name, employees.email, employees.department
+        SELECT employees.id, employees.user_id, employees.name, employees.email, employees.department_id, employees.department
         FROM employees
         INNER JOIN users
         ON employees.user_id = users.id OR LOWER(users.email) = LOWER(employees.email)
@@ -519,10 +905,13 @@ def get_scope_ids(request_user):
     if request_user["role"] == "manager":
         project_ids = get_manager_project_ids(request_user["id"])
         employee_ids = get_manager_employee_ids(request_user["id"])
+        departments = get_departments_for_manager(request_user["id"])
         return {
             "role": "manager",
             "project_ids": project_ids,
             "employee_ids": employee_ids,
+            "department_ids": [department["id"] for department in departments],
+            "department_names": [department["name"] for department in departments],
         }
 
     employee = get_employee_for_user(request_user)
@@ -545,16 +934,25 @@ def get_tasks_for_scope(request_user):
         tasks.status,
         tasks.priority,
         tasks.deadline,
+        tasks.manager_user_id,
         tasks.assigned_to,
         tasks.project_id,
         employees.name AS employee_name,
         employees.department AS employee_department,
-        projects.project_name
+        projects.project_name,
+        projects.department_id,
+        projects.manager_user_id AS project_manager_user_id,
+        manager_users.name AS manager_name,
+        project_manager_users.name AS project_manager_name
     FROM tasks
     LEFT JOIN employees
     ON tasks.assigned_to = employees.id
     LEFT JOIN projects
     ON tasks.project_id = projects.id
+    LEFT JOIN users AS manager_users
+    ON tasks.manager_user_id = manager_users.id
+    LEFT JOIN users AS project_manager_users
+    ON projects.manager_user_id = project_manager_users.id
     """
     params = []
 
@@ -565,8 +963,9 @@ def get_tasks_for_scope(request_user):
             conn.close()
             return []
         placeholders = ",".join(["%s"] * len(project_ids))
-        query += f" WHERE tasks.project_id IN ({placeholders})"
+        query += f" WHERE tasks.project_id IN ({placeholders}) OR tasks.manager_user_id=%s"
         params.extend(project_ids)
+        params.append(request_user["id"])
     elif scope["role"] == "employee":
         employee = scope.get("employee")
         if not employee:
@@ -590,13 +989,99 @@ def get_attendance_records_for_scope(request_user):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
-    query = """
+    try:
+        query = """
+        SELECT
+            a.id,
+            a.employee_id,
+            a.date,
+            a.check_in,
+            a.check_out,
+            a.status,
+            a.notes,
+            a.created_at,
+            e.name AS employee_name,
+            e.department AS employee_department
+        FROM attendance a
+        LEFT JOIN employees e ON a.employee_id = e.id
+        """
+        params = []
+        filters = []
+
+        if scope["role"] == "manager":
+            employee_ids = scope.get("employee_ids", [])
+            if not employee_ids:
+                cursor.close()
+                conn.close()
+                return []
+            placeholders = ",".join(["%s"] * len(employee_ids))
+            filters.append(f"a.employee_id IN ({placeholders})")
+            params.extend(employee_ids)
+        elif scope["role"] == "employee":
+            employee = scope.get("employee")
+            if not employee:
+                cursor.close()
+                conn.close()
+                return []
+            filters.append("a.employee_id=%s")
+            params.append(employee["id"])
+
+        if filters:
+            query += " WHERE " + " AND ".join(filters)
+
+        query += " ORDER BY a.date DESC, a.id DESC"
+        cursor.execute(query, tuple(params))
+        records = [normalize_attendance_record(record) for record in cursor.fetchall()]
+        cursor.close()
+        conn.close()
+        return records
+    except mysql.connector.Error:
+        cursor.close()
+        conn.close()
+        return get_attendance_records_from_audit_logs(request_user)
+
+
+def get_attendance_records_from_audit_logs(request_user, *, employee_id=None, date_from=None, date_to=None):
+    scope = get_scope_ids(request_user)
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    cursor.execute(
+        """
+        SELECT COLUMN_NAME
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'audit_logs'
+        """
+    )
+    audit_columns = {row["COLUMN_NAME"] for row in cursor.fetchall()}
+
+    if {"event_type", "entity", "entity_id", "data"}.issubset(audit_columns):
+        event_column = "event_type"
+        entity_column = "entity"
+        payload_column = "data"
+    elif {"action_type", "entity_type", "entity_id", "details"}.issubset(audit_columns):
+        event_column = "action_type"
+        entity_column = "entity_type"
+        payload_column = "details"
+    else:
+        cursor.close()
+        conn.close()
+        return []
+
+    query = f"""
     SELECT
-        a.id,
-        a.employee_id,
-        a.date,
-        a.status
-    FROM attendance a
+        id,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT({payload_column}, '$.employee_id')) AS UNSIGNED) AS employee_id,
+        JSON_UNQUOTE(JSON_EXTRACT({payload_column}, '$.date')) AS date,
+        JSON_UNQUOTE(JSON_EXTRACT({payload_column}, '$.check_in')) AS check_in,
+        JSON_UNQUOTE(JSON_EXTRACT({payload_column}, '$.check_out')) AS check_out,
+        JSON_UNQUOTE(JSON_EXTRACT({payload_column}, '$.status')) AS status,
+        JSON_UNQUOTE(JSON_EXTRACT({payload_column}, '$.notes')) AS notes,
+        created_at
+    FROM audit_logs
+    WHERE {event_column} = 'attendance_recorded'
+      AND {entity_column} = 'attendance'
     """
     params = []
 
@@ -606,21 +1091,57 @@ def get_attendance_records_for_scope(request_user):
             cursor.close()
             conn.close()
             return []
-        placeholders = ",".join(["%s"] * len(employee_ids))
-        query += f" WHERE a.employee_id IN ({placeholders})"
-        params.extend(employee_ids)
+        if employee_id and employee_id not in employee_ids:
+            cursor.close()
+            conn.close()
+            return []
+        target_ids = [employee_id] if employee_id else employee_ids
+        placeholders = ",".join(["%s"] * len(target_ids))
+        query += f" AND CAST(JSON_UNQUOTE(JSON_EXTRACT({payload_column}, '$.employee_id')) AS UNSIGNED) IN ({placeholders})"
+        params.extend(target_ids)
     elif scope["role"] == "employee":
         employee = scope.get("employee")
         if not employee:
             cursor.close()
             conn.close()
             return []
-        query += " WHERE a.employee_id=%s"
+        query += f" AND CAST(JSON_UNQUOTE(JSON_EXTRACT({payload_column}, '$.employee_id')) AS UNSIGNED) = %s"
         params.append(employee["id"])
+    elif employee_id:
+        query += f" AND CAST(JSON_UNQUOTE(JSON_EXTRACT({payload_column}, '$.employee_id')) AS UNSIGNED) = %s"
+        params.append(employee_id)
 
-    query += " ORDER BY a.date DESC, a.id DESC"
+    if date_from:
+        query += f" AND JSON_UNQUOTE(JSON_EXTRACT({payload_column}, '$.date')) >= %s"
+        params.append(date_from.isoformat() if isinstance(date_from, date) else str(date_from))
+
+    if date_to:
+        query += f" AND JSON_UNQUOTE(JSON_EXTRACT({payload_column}, '$.date')) <= %s"
+        params.append(date_to.isoformat() if isinstance(date_to, date) else str(date_to))
+
+    query += " ORDER BY created_at DESC, id DESC"
     cursor.execute(query, tuple(params))
-    records = cursor.fetchall()
+    records = [normalize_attendance_record(record) for record in cursor.fetchall()]
+
+    employee_ids = sorted({row["employee_id"] for row in records if row.get("employee_id")})
+    employee_map = {}
+    if employee_ids:
+        placeholders = ",".join(["%s"] * len(employee_ids))
+        cursor.execute(
+            f"""
+            SELECT id, name, department
+            FROM employees
+            WHERE id IN ({placeholders})
+            """,
+            tuple(employee_ids),
+        )
+        employee_map = {row["id"]: row for row in cursor.fetchall()}
+
+    for row in records:
+        employee = employee_map.get(row.get("employee_id"), {})
+        row["employee_name"] = employee.get("name")
+        row["employee_department"] = employee.get("department")
+
     cursor.close()
     conn.close()
     return records
@@ -1125,6 +1646,18 @@ def add_employee():
     position = (data.get("role") or "").strip()
     department = (data.get("department") or "").strip()
 
+    try:
+        department_id = parse_int_id(data.get("department_id"), "Department", required=False)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+
+    department_record = None
+    if department_id:
+        department_record = get_department_by_id(department_id)
+        if not department_record:
+            return error_response("Selected department does not exist", 400)
+        department = department_record["name"]
+
     if not name or not email:
         return error_response("Employee name and email are required", 400)
 
@@ -1170,10 +1703,10 @@ def add_employee():
 
         cursor.execute(
             """
-            INSERT INTO employees (user_id,name,email,role,department)
-            VALUES (%s,%s,%s,%s,%s)
+            INSERT INTO employees (user_id,name,email,role,department_id,department)
+            VALUES (%s,%s,%s,%s,%s,%s)
             """,
-            (user_id, name, email, display_role, department or None),
+            (user_id, name, email, display_role, department_id, department or None),
         )
         conn.commit()
         employee_id = cursor.lastrowid
@@ -1257,6 +1790,17 @@ def update_employee(id):
     role = (data.get("role") or "").strip()
     department = (data.get("department") or "").strip()
 
+    try:
+        department_id = parse_int_id(data.get("department_id"), "Department", required=False)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+
+    if department_id:
+        department_record = get_department_by_id(department_id)
+        if not department_record:
+            return error_response("Selected department does not exist", 400)
+        department = department_record["name"]
+
     if not name or not email:
         return error_response("Employee name and email are required", 400)
 
@@ -1280,13 +1824,14 @@ def update_employee(id):
         cursor.execute(
             """
             UPDATE employees
-            SET name=%s, email=%s, role=%s, department=%s
+            SET name=%s, email=%s, role=%s, department_id=%s, department=%s
             WHERE id=%s
             """,
             (
                 name,
                 email,
                 role,
+                department_id,
                 department,
                 id,
             )
@@ -1335,6 +1880,7 @@ def add_task():
         priority = (data.get("priority") or "MEDIUM").strip().upper()
         assigned_to = parse_int_id(data.get("assigned_to"), "Assignee")
         project_id = parse_int_id(data.get("project_id"), "Project")
+        manager_user_id = parse_int_id(data.get("manager_user_id"), "Manager")
         deadline = parse_date_value(data.get("deadline"), "Deadline")
     except ValueError as exc:
         return error_response(str(exc), 400)
@@ -1347,24 +1893,42 @@ def add_task():
         return error_response("Project is required for task assignment", 400)
     if not project_exists(project_id):
         return error_response("Selected project does not exist", 400)
-    if request_user["role"] == "manager" and not can_access_project(request_user, project_id):
-        return error_response("Managers can only create tasks for projects they manage", 403)
+    project = get_project_by_id(project_id)
+    if not project:
+        return error_response("Selected project does not exist", 400)
+    if request_user["role"] == "manager":
+        if not can_access_project(request_user, project_id):
+            return error_response("Managers can only create tasks for projects they manage", 403)
+        manager_user_id = request_user["id"]
+    else:
+        if not manager_user_id:
+            manager_user_id = project.get("manager_user_id")
+        if not manager_user_id:
+            return error_response("Manager assignment is required", 400)
+        if manager_user_id != project.get("manager_user_id"):
+            return error_response("Task manager must match the manager assigned to the project department", 400)
     if assigned_to and not employee_exists(assigned_to):
         return error_response("Selected assignee does not exist", 400)
+    if assigned_to and not employee_is_in_project_team(project_id, assigned_to):
+        return error_response("Selected assignee must be assigned to the project team", 400)
+    if request_user["role"] == "admin" and assigned_to:
+        return error_response("Admin must assign tasks to a manager first, not directly to an employee", 400)
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
     cursor.execute(
         """
-        INSERT INTO tasks (title, description, status, priority, assigned_to, project_id, deadline)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO tasks (title, description, status, priority, manager_user_id, assigned_by_admin_user_id, assigned_to, project_id, deadline)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             title,
             description or None,
             "TO_DO",
             priority,
+            manager_user_id,
+            request_user["id"] if request_user["role"] == "admin" else project.get("created_by"),
             assigned_to,
             project_id,
             deadline,
@@ -1372,6 +1936,10 @@ def add_task():
     )
     task_id = cursor.lastrowid
     conn.commit()
+
+    if assigned_to and manager_user_id:
+        sync_task_assignment(task_id, assigned_to, manager_user_id, conn=conn)
+        conn.commit()
 
     if assigned_to:
         assignee = get_employee_by_id(assigned_to)
@@ -1384,13 +1952,24 @@ def add_task():
                 conn=conn,
             )
             conn.commit()
+    elif manager_user_id:
+        manager = get_user_by_id(manager_user_id)
+        if manager:
+            create_notification(
+                manager["id"],
+                "Task assigned by admin",
+                f"You have received '{title}' for project '{project.get('project_name') or 'Unassigned'}'.",
+                "task",
+                conn=conn,
+            )
+            conn.commit()
 
     create_audit_log(
         request_user["id"],
         "task_created",
         "task",
         task_id,
-        {"title": title, "project_id": project_id, "assigned_to": assigned_to},
+        {"title": title, "project_id": project_id, "assigned_to": assigned_to, "manager_user_id": manager_user_id},
     )
 
     cursor.close()
@@ -1418,6 +1997,11 @@ def update_task(task_id):
     try:
         request_status = (
             None if data.get("status") is None else str(data.get("status")).strip().upper()
+        )
+        manager_user_id = (
+            task.get("manager_user_id")
+            if "manager_user_id" not in data
+            else parse_int_id(data.get("manager_user_id"), "Manager")
         )
         assigned_to = (
             task["assigned_to"]
@@ -1449,11 +2033,24 @@ def update_task(task_id):
     if request_user["role"] == "manager":
         if project_id and not can_access_project(request_user, project_id):
             return error_response("Managers can only manage tasks for their own projects", 403)
+        manager_user_id = request_user["id"]
+    elif project_id:
+        project = get_project_by_id(project_id)
+        if not project:
+            return error_response("Selected project does not exist", 400)
+        if manager_user_id and manager_user_id != project.get("manager_user_id"):
+            return error_response("Task manager must match the manager assigned to the project department", 400)
+        if not manager_user_id:
+            manager_user_id = project.get("manager_user_id")
 
     if assigned_to and not employee_exists(assigned_to):
         return error_response("Selected assignee does not exist", 400)
     if project_id and not project_exists(project_id):
         return error_response("Selected project does not exist", 400)
+    if assigned_to and project_id and not employee_is_in_project_team(project_id, assigned_to):
+        return error_response("Selected assignee must be assigned to the project team", 400)
+    if request_user["role"] == "admin" and "assigned_to" in data and assigned_to:
+        return error_response("Admin must assign tasks to a manager first, not directly to an employee", 400)
 
     title = (data.get("title") if "title" in data else task["title"] or "").strip()
     description = (data.get("description") if "description" in data else task.get("description") or "").strip()
@@ -1487,6 +2084,7 @@ def update_task(task_id):
                 description=%s,
                 status=%s,
                 priority=%s,
+                manager_user_id=%s,
                 assigned_to=%s,
                 project_id=%s,
                 deadline=%s
@@ -1497,6 +2095,7 @@ def update_task(task_id):
                 description or None,
                 request_status or task["status"],
                 priority,
+                manager_user_id,
                 assigned_to,
                 project_id,
                 deadline,
@@ -1505,6 +2104,10 @@ def update_task(task_id):
         )
 
     conn.commit()
+
+    if request_user["role"] in {"admin", "manager"}:
+        sync_task_assignment(task_id, assigned_to, manager_user_id, conn=conn)
+        conn.commit()
 
     if request_status == "DONE" and task["status"] != "DONE" and task.get("project_owner_id"):
         create_notification(
@@ -1533,7 +2136,7 @@ def update_task(task_id):
         "task_updated",
         "task",
         task_id,
-        {"status": request_status or task["status"], "project_id": project_id, "assigned_to": assigned_to},
+        {"status": request_status or task["status"], "project_id": project_id, "assigned_to": assigned_to, "manager_user_id": manager_user_id},
     )
 
     cursor.close()
@@ -1576,6 +2179,205 @@ def delete_task(task_id):
     )
 
     return jsonify({"message":"Task deleted"})
+
+
+@app.route("/assign-task-to-manager", methods=["POST"])
+def assign_task_to_manager():
+    request_user, error = require_admin()
+    if error:
+        return error
+
+    data = request.get_json(silent=True) or {}
+    try:
+        title = (data.get("title") or "").strip()
+        description = (data.get("description") or "").strip()
+        priority = (data.get("priority") or "MEDIUM").strip().upper()
+        project_id = parse_int_id(data.get("project_id"), "Project", required=True)
+        manager_user_id = parse_int_id(data.get("manager_user_id"), "Manager", required=False)
+        deadline = parse_date_value(data.get("deadline"), "Deadline")
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+
+    if not title:
+        return error_response("Task title is required", 400)
+    if priority not in TASK_PRIORITIES:
+        return error_response("Invalid task priority", 400)
+
+    project = get_project_by_id(project_id)
+    if not project:
+        return error_response("Project not found", 404)
+
+    manager_user_id = manager_user_id or project.get("manager_user_id")
+    if not manager_user_id:
+        return error_response("Project must be linked to a department manager first", 400)
+    if manager_user_id != project.get("manager_user_id"):
+        return error_response("Task manager must match the manager assigned to the project department", 400)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO tasks (
+            title, description, status, priority, manager_user_id,
+            assigned_by_admin_user_id, assigned_to, project_id, deadline
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, NULL, %s, %s)
+        """,
+        (
+            title,
+            description or None,
+            "TO_DO",
+            priority,
+            manager_user_id,
+            request_user["id"],
+            project_id,
+            deadline,
+        ),
+    )
+    task_id = cursor.lastrowid
+    conn.commit()
+
+    manager = get_user_by_id(manager_user_id)
+    if manager:
+        create_notification(
+            manager["id"],
+            "Task assigned by admin",
+            f"You have received '{title}' for project '{project.get('project_name') or 'Unassigned'}'.",
+            "task",
+            conn=conn,
+        )
+        conn.commit()
+
+    cursor.close()
+    conn.close()
+
+    return jsonify({
+        "message": "Task assigned to manager successfully",
+        "task_id": task_id,
+        "manager_user_id": manager_user_id,
+        "project_id": project_id,
+    }), 201
+
+
+@app.route("/my-department-projects", methods=["GET"])
+def my_department_projects():
+    request_user, error = require_authenticated_user()
+    if error:
+        return error
+    if request_user["role"] != "manager":
+        return error_response("Manager access required", 403)
+    return jsonify(get_projects().get_json())
+
+
+@app.route("/assign-employee-to-project", methods=["POST"])
+def assign_employee_to_project():
+    request_user, error = require_manager_or_admin()
+    if error:
+        return error
+
+    data = request.get_json(silent=True) or {}
+    try:
+        project_id = parse_int_id(data.get("project_id"), "Project", required=True)
+        employee_id = parse_int_id(data.get("employee_id"), "Employee", required=True)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+
+    project = get_project_by_id(project_id)
+    employee = get_employee_by_id(employee_id)
+    if not project:
+        return error_response("Project not found", 404)
+    if not employee:
+        return error_response("Employee not found", 404)
+    if request_user["role"] == "manager" and project.get("manager_user_id") != request_user["id"]:
+        return error_response("Managers can only assign employees to their own department projects", 403)
+    if project.get("department_id") and employee.get("department_id") and employee["department_id"] != project["department_id"]:
+        return error_response("Managers can only assign employees from their own department", 400)
+    if project.get("department_id") and employee.get("department_id") is None:
+        department = get_department_by_id(project["department_id"])
+        if department and employee.get("department") != department["name"]:
+            return error_response("Managers can only assign employees from their own department", 400)
+
+    conn = get_db_connection()
+    try:
+        team_member_ids = get_project_team_member_ids(project_id)
+        if employee_id not in team_member_ids:
+            team_member_ids.append(employee_id)
+        sync_project_team_members(project_id, sorted(team_member_ids), request_user["id"], conn=conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({
+        "message": "Employee assigned to project successfully",
+        "project_id": project_id,
+        "employee_id": employee_id,
+    })
+
+
+@app.route("/assign-task-to-employee", methods=["POST"])
+def assign_task_to_employee():
+    request_user, error = require_authenticated_user()
+    if error:
+        return error
+    if request_user["role"] != "manager":
+        return error_response("Manager access required", 403)
+
+    data = request.get_json(silent=True) or {}
+    try:
+        task_id = parse_int_id(data.get("task_id"), "Task", required=True)
+        employee_id = parse_int_id(data.get("employee_id"), "Employee", required=True)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+
+    task = get_task_detail(task_id)
+    employee = get_employee_by_id(employee_id)
+    if not task:
+        return error_response("Task not found", 404)
+    if not employee:
+        return error_response("Employee not found", 404)
+    if task.get("manager_user_id") != request_user["id"] and task.get("project_manager_user_id") != request_user["id"]:
+        return error_response("Managers can only assign employees for tasks assigned to them", 403)
+    if task.get("project_id") and not employee_is_in_project_team(task["project_id"], employee_id):
+        return error_response("Employee must be assigned to the project before receiving task work", 400)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE tasks SET assigned_to=%s, manager_user_id=%s WHERE id=%s",
+        (employee_id, request_user["id"], task_id),
+    )
+    conn.commit()
+    sync_task_assignment(task_id, employee_id, request_user["id"], conn=conn)
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return jsonify({
+        "message": "Task assigned to employee successfully",
+        "task_id": task_id,
+        "employee_id": employee_id,
+        "assigned_by_manager": request_user["id"],
+    })
+
+
+@app.route("/my-tasks", methods=["GET"])
+def my_tasks():
+    request_user, error = require_authenticated_user()
+    if error:
+        return error
+    if request_user["role"] != "employee":
+        return error_response("Employee access required", 403)
+    return jsonify(get_tasks_for_scope(request_user))
+
+
+@app.route("/my-projects", methods=["GET"])
+def my_projects():
+    request_user, error = require_authenticated_user()
+    if error:
+        return error
+    if request_user["role"] != "employee":
+        return error_response("Employee access required", 403)
+    return jsonify(get_projects().get_json())
 @app.route("/employees", methods=["GET"])
 def get_employees():
     request_user, error = require_authenticated_user()
@@ -1585,8 +2387,31 @@ def get_employees():
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
-    if request_user["role"] in {"admin", "manager"}:
-        cursor.execute("SELECT id,name,email,role,department FROM employees ORDER BY name ASC")
+    if request_user["role"] == "admin":
+        cursor.execute(
+            """
+            SELECT id, user_id, name, email, role, department_id, department
+            FROM employees
+            ORDER BY name ASC
+            """
+        )
+    elif request_user["role"] == "manager":
+        managed_departments = get_departments_for_manager(request_user["id"])
+        department_names = [department["name"] for department in managed_departments]
+        if not department_names:
+            cursor.close()
+            conn.close()
+            return jsonify([])
+        placeholders = ",".join(["%s"] * len(department_names))
+        cursor.execute(
+            f"""
+            SELECT id, user_id, name, email, role, department_id, department
+            FROM employees
+            WHERE department IN ({placeholders})
+            ORDER BY name ASC
+            """,
+            tuple(department_names),
+        )
     else:
         employee = get_employee_for_user(request_user)
         cursor.close()
@@ -1653,22 +2478,100 @@ def update_employee_profile():
     return jsonify({"message": "Profile updated successfully"}), 200
 
 
-@app.route("/departments", methods=["GET"])
-def get_departments():
+@app.route("/managers", methods=["GET"])
+def get_managers():
     _, error = require_authenticated_user()
     if error:
         return error
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-
     cursor.execute(
         """
-        SELECT id, name, description, created_at
-        FROM departments
-        ORDER BY name ASC
+        SELECT
+            users.id,
+            users.name,
+            users.email,
+            users.role,
+            departments.id AS department_id,
+            departments.name AS department_name
+        FROM users
+        LEFT JOIN departments ON departments.manager_user_id = users.id
+        WHERE users.role='manager'
+        ORDER BY users.name ASC
         """
     )
+    managers = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return jsonify(managers)
+
+
+@app.route("/departments", methods=["GET"])
+def get_departments():
+    request_user, error = require_authenticated_user()
+    if error:
+        return error
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    if request_user["role"] == "manager":
+        cursor.execute(
+            """
+            SELECT
+                departments.id,
+                departments.name,
+                departments.description,
+                departments.manager_user_id,
+                departments.created_at,
+                users.name AS manager_name,
+                users.email AS manager_email
+            FROM departments
+            LEFT JOIN users ON departments.manager_user_id = users.id
+            WHERE departments.manager_user_id=%s
+            ORDER BY name ASC
+            """,
+            (request_user["id"],),
+        )
+    elif request_user["role"] == "employee":
+        employee = get_employee_for_user(request_user)
+        if not employee or not employee.get("department_id"):
+            cursor.close()
+            conn.close()
+            return jsonify([])
+        cursor.execute(
+            """
+            SELECT
+                departments.id,
+                departments.name,
+                departments.description,
+                departments.manager_user_id,
+                departments.created_at,
+                users.name AS manager_name,
+                users.email AS manager_email
+            FROM departments
+            LEFT JOIN users ON departments.manager_user_id = users.id
+            WHERE departments.id=%s
+            ORDER BY name ASC
+            """,
+            (employee["department_id"],),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT
+                departments.id,
+                departments.name,
+                departments.description,
+                departments.manager_user_id,
+                departments.created_at,
+                users.name AS manager_name,
+                users.email AS manager_email
+            FROM departments
+            LEFT JOIN users ON departments.manager_user_id = users.id
+            ORDER BY name ASC
+        """
+        )
     departments = cursor.fetchall()
 
     cursor.close()
@@ -1686,9 +2589,20 @@ def add_department():
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
     description = (data.get("description") or "").strip()
+    manager_user_id = data.get("manager_user_id")
 
     if not name:
         return error_response("Department name is required", 400)
+
+    try:
+        manager_user_id = parse_int_id(manager_user_id, "Manager", required=False)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+
+    if manager_user_id:
+        manager = get_user_by_id(manager_user_id)
+        if not manager or manager["role"] != "manager":
+            return error_response("Selected department manager is invalid", 400)
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -1696,18 +2610,26 @@ def add_department():
     try:
         cursor.execute(
             """
-            INSERT INTO departments (name, description)
-            VALUES (%s, %s)
+            INSERT INTO departments (name, description, manager_user_id)
+            VALUES (%s, %s, %s)
             """,
-            (name, description or None),
+            (name, description or None, manager_user_id),
         )
         conn.commit()
         department_id = cursor.lastrowid
         cursor.execute(
             """
-            SELECT id, name, description, created_at
+            SELECT
+                departments.id,
+                departments.name,
+                departments.description,
+                departments.manager_user_id,
+                departments.created_at,
+                users.name AS manager_name,
+                users.email AS manager_email
             FROM departments
-            WHERE id=%s
+            LEFT JOIN users ON departments.manager_user_id = users.id
+            WHERE departments.id=%s
             """,
             (department_id,),
         )
@@ -1733,16 +2655,27 @@ def update_department(department_id):
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
     description = (data.get("description") or "").strip()
+    manager_user_id = data.get("manager_user_id")
 
     if not name:
         return error_response("Department name is required", 400)
+
+    try:
+        manager_user_id = parse_int_id(manager_user_id, "Manager", required=False)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+
+    if manager_user_id:
+        manager = get_user_by_id(manager_user_id)
+        if not manager or manager["role"] != "manager":
+            return error_response("Selected department manager is invalid", 400)
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
     try:
         cursor.execute(
-            "SELECT name FROM departments WHERE id=%s",
+            "SELECT name, manager_user_id FROM departments WHERE id=%s",
             (department_id,),
         )
         current_department = cursor.fetchone()
@@ -1755,28 +2688,46 @@ def update_department(department_id):
         cursor.execute(
             """
             UPDATE departments
-            SET name=%s, description=%s
+            SET name=%s, description=%s, manager_user_id=%s
             WHERE id=%s
             """,
-            (name, description or None, department_id),
+            (name, description or None, manager_user_id, department_id),
         )
         conn.commit()
 
         cursor.execute(
             """
             UPDATE employees
-            SET department=%s
+            SET department_id=%s, department=%s
             WHERE department=%s
             """,
-            (name, previous_name),
+            (department_id, name, previous_name),
         )
         conn.commit()
 
         cursor.execute(
             """
-            SELECT id, name, description, created_at
+            UPDATE projects
+            SET manager_user_id=%s
+            WHERE department_id=%s
+            """,
+            (manager_user_id, department_id),
+        )
+        conn.commit()
+
+        cursor.execute(
+            """
+            SELECT
+                departments.id,
+                departments.name,
+                departments.description,
+                departments.manager_user_id,
+                departments.created_at,
+                users.name AS manager_name,
+                users.email AS manager_email
             FROM departments
-            WHERE id=%s
+            LEFT JOIN users ON departments.manager_user_id = users.id
+            WHERE departments.id=%s
             """,
             (department_id,),
         )
@@ -1814,8 +2765,16 @@ def delete_department(department_id):
         return error_response("Department not found", 404)
 
     cursor.execute(
-        "UPDATE employees SET department=NULL WHERE department=%s",
-        (department["name"],),
+        "UPDATE employees SET department_id=NULL, department=NULL WHERE department=%s OR department_id=%s",
+        (department["name"], department_id),
+    )
+    cursor.execute(
+        """
+        UPDATE projects
+        SET manager_user_id=NULL
+        WHERE department_id=%s
+        """,
+        (department_id,),
     )
     cursor.execute("DELETE FROM departments WHERE id=%s", (department_id,))
     conn.commit()
@@ -1826,46 +2785,59 @@ def delete_department(department_id):
     return jsonify({"message": "Department deleted successfully"})
 
 
+@app.route("/assign-manager", methods=["POST"])
+def assign_manager_to_department():
+    _, error = require_admin()
+    if error:
+        return error
+
+    data = request.get_json(silent=True) or {}
+    try:
+        department_id = parse_int_id(data.get("department_id"), "Department", required=True)
+        manager_user_id = parse_int_id(data.get("manager_user_id"), "Manager", required=True)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+
+    department = get_department_by_id(department_id)
+    manager = get_user_by_id(manager_user_id)
+    if not department:
+        return error_response("Department not found", 404)
+    if not manager or manager["role"] != "manager":
+        return error_response("Selected manager is invalid", 400)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE departments SET manager_user_id=%s WHERE id=%s",
+        (manager_user_id, department_id),
+    )
+    cursor.execute(
+        "UPDATE projects SET manager_user_id=%s WHERE department_id=%s",
+        (manager_user_id, department_id),
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return jsonify({
+        "message": "Manager assigned successfully",
+        "department_id": department_id,
+        "manager_user_id": manager_user_id,
+    })
+
+
 @app.route("/projects", methods=["GET"])
 def get_projects():
     request_user, error = require_authenticated_user()
     if error:
         return error
 
+    query, params = build_project_list_query(request_user)
+    if query is None:
+        return jsonify([])
+
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-
-    query = """
-    SELECT DISTINCT
-        projects.id,
-        projects.project_name,
-        projects.description,
-        projects.created_by,
-        projects.created_at,
-        users.name AS created_by_name
-    FROM projects
-    LEFT JOIN users
-    ON projects.created_by = users.id
-    """
-    params = []
-
-    if request_user["role"] == "manager":
-        query += " WHERE projects.created_by=%s"
-        params.append(request_user["id"])
-    elif request_user["role"] == "employee":
-        employee = get_employee_for_user(request_user)
-        if not employee:
-            cursor.close()
-            conn.close()
-            return jsonify([])
-        query += """
-        INNER JOIN tasks
-        ON tasks.project_id = projects.id
-        WHERE tasks.assigned_to=%s
-        """
-        params.append(employee["id"])
-
-    query += " ORDER BY projects.created_at DESC, projects.id DESC"
     cursor.execute(query, tuple(params))
     projects = cursor.fetchall()
 
@@ -1877,29 +2849,57 @@ def get_projects():
 
 @app.route("/projects", methods=["POST"])
 def add_project():
-    request_user, error = require_manager_or_admin()
+    request_user, error = require_admin()
     if error:
         return error
 
     data = request.get_json(silent=True) or {}
     project_name = (data.get("project_name") or "").strip()
     description = (data.get("description") or "").strip()
+    team_member_ids = data.get("team_member_ids") or []
 
     if not project_name:
         return error_response("Project name is required", 400)
+
+    try:
+        department_id = parse_int_id(data.get("department_id"), "Department", required=True)
+        manager_user_id = parse_int_id(data.get("manager_user_id"), "Manager", required=True)
+        team_member_ids = normalize_team_member_ids(team_member_ids)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+
+    department = get_department_by_id(department_id)
+    if not department:
+        return error_response("Selected department does not exist", 400)
+
+    manager = get_user_by_id(manager_user_id)
+    if not manager or manager["role"] != "manager":
+        return error_response("Selected manager is invalid", 400)
+
+    if department.get("manager_user_id") != manager_user_id:
+        return error_response("Selected manager must be assigned as the department manager", 400)
+
+    try:
+        valid_employee_ids = validate_team_members_for_department(department["name"], team_member_ids)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
     cursor.execute(
         """
-        INSERT INTO projects (project_name, description, created_by)
-        VALUES (%s, %s, %s)
+        INSERT INTO projects (project_name, description, department_id, manager_user_id, created_by)
+        VALUES (%s, %s, %s, %s, %s)
         """,
-        (project_name, description or None, request_user["id"]),
+        (project_name, description or None, department_id, manager_user_id, request_user["id"]),
     )
     conn.commit()
     project_id = cursor.lastrowid
+
+    if valid_employee_ids:
+        sync_project_team_members(project_id, valid_employee_ids, request_user["id"], conn=conn)
+        conn.commit()
 
     cursor.execute(
         """
@@ -1907,12 +2907,18 @@ def add_project():
             projects.id,
             projects.project_name,
             projects.description,
+            projects.department_id,
+            projects.manager_user_id,
             projects.created_by,
             projects.created_at,
-            users.name AS created_by_name
+            users.name AS created_by_name,
+            departments.name AS department_name,
+            managers.name AS manager_name,
+            managers.email AS manager_email
         FROM projects
-        LEFT JOIN users
-        ON projects.created_by = users.id
+        LEFT JOIN users ON projects.created_by = users.id
+        LEFT JOIN departments ON projects.department_id = departments.id
+        LEFT JOIN users AS managers ON projects.manager_user_id = managers.id
         WHERE projects.id=%s
         """,
         (project_id,),
@@ -1937,6 +2943,7 @@ def update_project(project_id):
     data = request.get_json(silent=True) or {}
     project_name = (data.get("project_name") or "").strip()
     description = (data.get("description") or "").strip()
+    team_member_ids = data.get("team_member_ids")
 
     if not project_name:
         return error_response("Project name is required", 400)
@@ -1945,7 +2952,7 @@ def update_project(project_id):
     cursor = conn.cursor(dictionary=True)
 
     cursor.execute(
-        "SELECT created_by FROM projects WHERE id=%s",
+        "SELECT created_by, department_id, manager_user_id FROM projects WHERE id=%s",
         (project_id,),
     )
     project_owner = cursor.fetchone()
@@ -1954,20 +2961,79 @@ def update_project(project_id):
         conn.close()
         return error_response("Project not found", 404)
 
-    if request_user["role"] == "manager" and project_owner["created_by"] != request_user["id"]:
+    if request_user["role"] == "manager" and project_owner["manager_user_id"] != request_user["id"]:
         cursor.close()
         conn.close()
-        return error_response("Managers can only update their own projects", 403)
+        return error_response("Managers can only update projects assigned to them", 403)
+
+    department_id = project_owner["department_id"]
+    manager_user_id = project_owner["manager_user_id"]
+
+    if request_user["role"] == "admin":
+        try:
+            department_id = parse_int_id(data.get("department_id"), "Department", required=True)
+            manager_user_id = parse_int_id(data.get("manager_user_id"), "Manager", required=True)
+            if team_member_ids is not None:
+                team_member_ids = normalize_team_member_ids(team_member_ids)
+        except ValueError as exc:
+            cursor.close()
+            conn.close()
+            return error_response(str(exc), 400)
+
+        department = get_department_by_id(department_id)
+        manager = get_user_by_id(manager_user_id)
+        if not department:
+            cursor.close()
+            conn.close()
+            return error_response("Selected department does not exist", 400)
+        if not manager or manager["role"] != "manager":
+            cursor.close()
+            conn.close()
+            return error_response("Selected manager is invalid", 400)
+        if department.get("manager_user_id") != manager_user_id:
+            cursor.close()
+            conn.close()
+            return error_response("Selected manager must be assigned as the department manager", 400)
+    else:
+        department = get_department_by_id(department_id) if department_id else None
+        if team_member_ids is not None:
+            try:
+                team_member_ids = normalize_team_member_ids(team_member_ids)
+            except ValueError as exc:
+                cursor.close()
+                conn.close()
+                return error_response(str(exc), 400)
+
+    if team_member_ids is not None:
+        if not department:
+            cursor.close()
+            conn.close()
+            return error_response("Project department not found", 400)
+        try:
+            valid_employee_ids = validate_team_members_for_department(
+                department["name"],
+                team_member_ids,
+            )
+        except ValueError:
+            cursor.close()
+            conn.close()
+            return error_response("All project team members must belong to the project department", 400)
+    else:
+        valid_employee_ids = None
 
     cursor.execute(
         """
         UPDATE projects
-        SET project_name=%s, description=%s
+        SET project_name=%s, description=%s, department_id=%s, manager_user_id=%s
         WHERE id=%s
         """,
-        (project_name, description or None, project_id),
+        (project_name, description or None, department_id, manager_user_id, project_id),
     )
     conn.commit()
+
+    if valid_employee_ids is not None:
+        sync_project_team_members(project_id, valid_employee_ids, request_user["id"], conn=conn)
+        conn.commit()
 
     cursor.execute(
         """
@@ -1975,12 +3041,18 @@ def update_project(project_id):
             projects.id,
             projects.project_name,
             projects.description,
+            projects.department_id,
+            projects.manager_user_id,
             projects.created_by,
             projects.created_at,
-            users.name AS created_by_name
+            users.name AS created_by_name,
+            departments.name AS department_name,
+            managers.name AS manager_name,
+            managers.email AS manager_email
         FROM projects
-        LEFT JOIN users
-        ON projects.created_by = users.id
+        LEFT JOIN users ON projects.created_by = users.id
+        LEFT JOIN departments ON projects.department_id = departments.id
+        LEFT JOIN users AS managers ON projects.manager_user_id = managers.id
         WHERE projects.id=%s
         """,
         (project_id,),
@@ -1996,9 +3068,50 @@ def update_project(project_id):
     })
 
 
+@app.route("/projects/<int:project_id>/team", methods=["PUT"])
+def update_project_team(project_id):
+    request_user, error = require_manager_or_admin()
+    if error:
+        return error
+
+    project = get_project_by_id(project_id)
+    if not project:
+        return error_response("Project not found", 404)
+
+    if request_user["role"] == "manager" and project.get("manager_user_id") != request_user["id"]:
+        return error_response("Managers can only manage team members for their assigned projects", 403)
+
+    department = get_department_by_id(project["department_id"]) if project.get("department_id") else None
+    if not department:
+        return error_response("Project department not found", 400)
+
+    data = request.get_json(silent=True) or {}
+    try:
+        team_member_ids = normalize_team_member_ids(data.get("team_member_ids") or [])
+        valid_employee_ids = validate_team_members_for_department(
+            department["name"],
+            team_member_ids,
+        )
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+
+    conn = get_db_connection()
+    try:
+        sync_project_team_members(project_id, valid_employee_ids, request_user["id"], conn=conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({
+        "message": "Project team updated successfully",
+        "project_id": project_id,
+        "team_member_ids": valid_employee_ids,
+    })
+
+
 @app.route("/projects/<int:project_id>", methods=["DELETE"])
 def delete_project(project_id):
-    request_user, error = require_manager_or_admin()
+    request_user, error = require_admin()
     if error:
         return error
 
@@ -2015,12 +3128,8 @@ def delete_project(project_id):
         conn.close()
         return error_response("Project not found", 404)
 
-    if request_user["role"] == "manager" and project_owner["created_by"] != request_user["id"]:
-        cursor.close()
-        conn.close()
-        return error_response("Managers can only delete their own projects", 403)
-
     cursor.execute("UPDATE tasks SET project_id=NULL WHERE project_id=%s", (project_id,))
+    cursor.execute("DELETE FROM project_team_members WHERE project_id=%s", (project_id,))
     cursor.execute("DELETE FROM projects WHERE id=%s", (project_id,))
     conn.commit()
     deleted_rows = cursor.rowcount
@@ -2032,6 +3141,87 @@ def delete_project(project_id):
         return error_response("Project not found", 404)
 
     return jsonify({"message": "Project deleted successfully"})
+
+
+@app.route("/projects/<int:project_id>/team", methods=["GET"])
+def get_project_team(project_id):
+    request_user, error = require_authenticated_user()
+    if error:
+        return error
+
+    project = get_project_by_id(project_id)
+    if not project:
+        return error_response("Project not found", 404)
+    if request_user["role"] == "manager" and project.get("manager_user_id") != request_user["id"]:
+        return error_response("Managers can only view team for their assigned projects", 403)
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT
+            employees.id,
+            employees.user_id,
+            employees.name,
+            employees.email,
+            employees.role,
+            employees.department_id,
+            employees.department
+        FROM project_team_members
+        INNER JOIN employees ON project_team_members.employee_id = employees.id
+        WHERE project_team_members.project_id=%s
+        ORDER BY employees.name ASC
+        """,
+        (project_id,),
+    )
+    members = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return jsonify(members)
+
+
+@app.route("/assign-project-to-department", methods=["POST"])
+def assign_project_to_department():
+    _, error = require_admin()
+    if error:
+        return error
+
+    data = request.get_json(silent=True) or {}
+    try:
+        project_id = parse_int_id(data.get("project_id"), "Project", required=True)
+        department_id = parse_int_id(data.get("department_id"), "Department", required=True)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+
+    project = get_project_by_id(project_id)
+    department = get_department_by_id(department_id)
+    if not project:
+        return error_response("Project not found", 404)
+    if not department:
+        return error_response("Department not found", 404)
+    if not department.get("manager_user_id"):
+        return error_response("Assign a manager to the department before linking projects", 400)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE projects
+        SET department_id=%s, manager_user_id=%s
+        WHERE id=%s
+        """,
+        (department_id, department["manager_user_id"], project_id),
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return jsonify({
+        "message": "Project assigned to department successfully",
+        "project_id": project_id,
+        "department_id": department_id,
+        "manager_user_id": department["manager_user_id"],
+    })
 
 
 @app.route("/dashboard-stats")
@@ -2205,67 +3395,33 @@ def get_attendance():
     if parsed_date_from and parsed_date_to and parsed_date_from > parsed_date_to:
         return error_response("date_from cannot be after date_to", 400)
 
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-
-    query = """
-    SELECT
-        a.id,
-        a.employee_id,
-        a.date,
-        a.check_in,
-        a.check_out,
-        a.status,
-        a.notes,
-        a.created_at,
-        e.name AS employee_name,
-        e.department AS employee_department
-    FROM attendance a
-    LEFT JOIN employees e ON a.employee_id = e.id
-    WHERE 1=1
-    """
-    params = []
-
     if request_user["role"] == "employee":
         employee = get_employee_for_user(request_user)
         if not employee:
-            cursor.close()
-            conn.close()
             return error_response("Employee record not found", 404)
-        query += " AND a.employee_id=%s"
-        params.append(employee["id"])
     elif request_user["role"] == "manager":
         managed_employee_ids = get_manager_employee_ids(request_user["id"])
         if not managed_employee_ids:
-            cursor.close()
-            conn.close()
             return jsonify([])
         if employee_id and employee_id not in managed_employee_ids:
-            cursor.close()
-            conn.close()
             return error_response("Managers can only view attendance for their own team", 403)
-        target_ids = [employee_id] if employee_id else managed_employee_ids
-        placeholders = ",".join(["%s"] * len(target_ids))
-        query += f" AND a.employee_id IN ({placeholders})"
-        params.extend(target_ids)
-    elif employee_id:
-        query += " AND a.employee_id=%s"
-        params.append(employee_id)
 
-    if parsed_date_from:
-        query += " AND a.date >= %s"
-        params.append(parsed_date_from)
+    records = get_attendance_records_for_scope(request_user)
 
-    if parsed_date_to:
-        query += " AND a.date <= %s"
-        params.append(parsed_date_to)
-
-    query += " ORDER BY a.date DESC, a.id DESC"
-    cursor.execute(query, tuple(params))
-    records = cursor.fetchall()
-
-    cursor.close()
-    conn.close()
+    if not records:
+        records = get_attendance_records_from_audit_logs(
+            request_user,
+            employee_id=employee_id,
+            date_from=parsed_date_from,
+            date_to=parsed_date_to,
+        )
+    else:
+        records = [
+            record for record in records
+            if (not employee_id or record.get("employee_id") == employee_id)
+            and (not parsed_date_from or str(record.get("date")) >= parsed_date_from.isoformat())
+            and (not parsed_date_to or str(record.get("date")) <= parsed_date_to.isoformat())
+        ]
 
     return jsonify(records)
 
@@ -2497,19 +3653,9 @@ def get_leave_requests():
         query += " AND lr.employee_id=%s"
         params.append(employee["id"])
     elif request_user["role"] == "manager":
-        managed_employee_ids = get_manager_employee_ids(request_user["id"])
-        if not managed_employee_ids:
-            cursor.close()
-            conn.close()
-            return jsonify([])
-        if employee_id and employee_id not in managed_employee_ids:
-            cursor.close()
-            conn.close()
-            return error_response("Managers can only view leave requests for their own team", 403)
-        target_ids = [employee_id] if employee_id else managed_employee_ids
-        placeholders = ",".join(["%s"] * len(target_ids))
-        query += f" AND lr.employee_id IN ({placeholders})"
-        params.extend(target_ids)
+        if employee_id:
+            query += " AND lr.employee_id=%s"
+            params.append(employee_id)
     elif employee_id:
         query += " AND lr.employee_id=%s"
         params.append(employee_id)
@@ -2558,14 +3704,7 @@ def get_pending_leave_requests():
         """
         cursor.execute(query)
     else:
-        employee_ids = get_manager_employee_ids(request_user["id"])
-        if not employee_ids:
-            cursor.close()
-            conn.close()
-            return jsonify([])
-
-        placeholders = ",".join(["%s"] * len(employee_ids))
-        query = f"""
+        query = """
         SELECT
             lr.id,
             lr.employee_id,
@@ -2581,10 +3720,9 @@ def get_pending_leave_requests():
         FROM leave_requests lr
         LEFT JOIN employees e ON lr.employee_id = e.id
         WHERE lr.status='pending'
-        AND lr.employee_id IN ({placeholders})
         ORDER BY lr.created_at DESC
         """
-        cursor.execute(query, tuple(employee_ids))
+        cursor.execute(query)
 
     requests = cursor.fetchall()
     cursor.close()
@@ -2599,16 +3737,17 @@ def submit_leave_request():
     if error:
         return error
 
-    data = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True) or {}
+    print("submit_leave_request payload:", payload)
     try:
-        employee_id = parse_int_id(data.get("employee_id"), "Employee ID", required=True)
-        start_date = parse_date_value(data.get("start_date"), "Start date", required=True)
-        end_date = parse_date_value(data.get("end_date"), "End date", required=True)
+        employee_id = parse_int_id(payload.get("employee_id"), "Employee ID", required=True)
+        start_date = parse_date_value(payload.get("start_date"), "Start date", required=True)
+        end_date = parse_date_value(payload.get("end_date"), "End date", required=True)
     except ValueError as exc:
         return error_response(str(exc), 400)
 
-    leave_type = (data.get("leave_type") or "vacation").lower()
-    reason = (data.get("reason") or "").strip()
+    leave_type = (payload.get("leave_type") or "vacation").lower()
+    reason = (payload.get("reason") or "").strip()
 
     if leave_type not in LEAVE_TYPES:
         return error_response("Invalid leave type", 400)
@@ -2621,13 +3760,14 @@ def submit_leave_request():
         employee = get_employee_for_user(request_user)
         if not employee or employee["id"] != employee_id:
             return error_response("Cannot submit leave for others", 403)
-    elif request_user["role"] == "manager" and not can_access_employee(request_user, employee_id):
-        return error_response("Managers can only submit leave for their own team", 403)
+    elif request_user["role"] == "manager" and not employee_exists(employee_id):
+        return error_response("Employee record not found", 404)
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
     try:
+        print("Before insert leave_requests")
         cursor.execute(
             """
             INSERT INTO leave_requests (employee_id, start_date, end_date, leave_type, reason)
@@ -2637,6 +3777,7 @@ def submit_leave_request():
         )
         conn.commit()
         request_id = cursor.lastrowid
+        print("After insert leave_requests, request_id:", request_id)
 
         cursor.execute(
             """
@@ -2656,7 +3797,7 @@ def submit_leave_request():
             """,
             (request_id,),
         )
-        request = cursor.fetchone()
+        leave_request_record = cursor.fetchone()
         create_audit_log(
             request_user["id"],
             "leave_submitted",
@@ -2680,7 +3821,7 @@ def submit_leave_request():
 
     return jsonify({
         "message": "Leave request submitted successfully",
-        "request": request,
+        "request": leave_request_record,
     }), 201
 
 
@@ -2713,11 +3854,6 @@ def update_leave_request(request_id):
             cursor.close()
             conn.close()
             return error_response("Cannot update others' leave requests", 403)
-    elif request_user["role"] == "manager" and not can_access_employee(request_user, leave_req["employee_id"]):
-        cursor.close()
-        conn.close()
-        return error_response("Managers can only review leave requests for their own team", 403)
-
     if action == "approve":
         if request_user["role"] not in {"admin", "manager"}:
             cursor.close()
@@ -3037,13 +4173,13 @@ def get_leave_balance(employee_id):
     for usage in leave_usage:
         leave_type = usage["leave_type"]
         if leave_type in leave_balance:
-            leave_balance[leave_type]["used"] = usage["used_days"]
+            leave_balance[leave_type]["used"] = int(usage["used_days"] or 0)
 
     for leave_type in leave_balance:
-        leave_balance[leave_type]["remaining"] = max(
+        leave_balance[leave_type]["remaining"] = int(max(
             0,
             leave_balance[leave_type]["allocated"] - leave_balance[leave_type]["used"]
-        )
+        ))
 
     return jsonify(leave_balance)
 

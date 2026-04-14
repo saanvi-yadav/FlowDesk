@@ -86,15 +86,24 @@ function EmployeeFormFields({ form, setForm, departments }) {
         <TextField
           select
           fullWidth
-          value={form.department}
+          value={form.department_id || ""}
           onChange={(e) =>
-            setForm((prev) => ({ ...prev, department: e.target.value }))
+            setForm((prev) => {
+              const department = departments.find(
+                (item) => String(item.id) === String(e.target.value),
+              );
+              return {
+                ...prev,
+                department_id: e.target.value,
+                department: department?.name || "",
+              };
+            })
           }
           sx={FIELD_SX}
         >
           <MenuItem value="">Unassigned</MenuItem>
           {departments.map((department) => (
-            <MenuItem key={department.id} value={department.name}>
+            <MenuItem key={department.id} value={department.id}>
               {department.name}
             </MenuItem>
           ))}
@@ -118,6 +127,7 @@ export default function Employees() {
     name: "",
     email: "",
     role: "",
+    department_id: "",
     department: "",
   });
 
@@ -128,6 +138,7 @@ export default function Employees() {
     name: "",
     email: "",
     role: "",
+    department_id: "",
     department: "",
   });
 
@@ -184,7 +195,7 @@ export default function Employees() {
         headers: getAuthHeaders(),
       });
       setAddOpen(false);
-      setAddForm({ name: "", email: "", role: "", department: "" });
+      setAddForm({ name: "", email: "", role: "", department_id: "", department: "" });
       fetchEmployees();
 
       if (response.data?.temporary_password) {
@@ -204,6 +215,7 @@ export default function Employees() {
       name: emp.name,
       email: emp.email,
       role: emp.role,
+      department_id: emp.department_id || "",
       department: emp.department,
     });
     setEditOpen(true);
@@ -221,6 +233,7 @@ export default function Employees() {
           name: editForm.name,
           email: editForm.email,
           role: editForm.role,
+          department_id: editForm.department_id || null,
           department: editForm.department,
         },
         { headers: getAuthHeaders() },

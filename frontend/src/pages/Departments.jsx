@@ -17,6 +17,7 @@ import {
   Avatar,
   IconButton,
   Chip,
+  MenuItem,
 } from "@mui/material";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
@@ -41,7 +42,7 @@ const FIELD_SX = {
   "& .MuiOutlinedInput-input": { py: 1.4 },
 };
 
-function DepartmentFields({ form, setForm }) {
+function DepartmentFields({ form, setForm, managers }) {
   return (
     <>
       <Box sx={{ mb: 1.5 }}>
@@ -76,6 +77,32 @@ function DepartmentFields({ form, setForm }) {
           sx={FIELD_SX}
         />
       </Box>
+      <Box sx={{ mt: 1.5 }}>
+        <Typography
+          sx={{ fontSize: 12.5, fontWeight: 600, color: "#374151", mb: 0.7 }}
+        >
+          Department Manager
+        </Typography>
+        <TextField
+          select
+          fullWidth
+          value={form.manager_user_id || ""}
+          onChange={(e) =>
+            setForm((prev) => ({
+              ...prev,
+              manager_user_id: e.target.value,
+            }))
+          }
+          sx={FIELD_SX}
+        >
+          <MenuItem value="">Assign later</MenuItem>
+          {managers.map((manager) => (
+            <MenuItem key={manager.id} value={manager.id}>
+              {manager.name} ({manager.email})
+            </MenuItem>
+          ))}
+        </TextField>
+      </Box>
     </>
   );
 }
@@ -85,14 +112,20 @@ export default function Departments() {
   const user = getStoredUser();
 
   const [departments, setDepartments] = useState([]);
+  const [managers, setManagers] = useState([]);
   const [addOpen, setAddOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
-  const [addForm, setAddForm] = useState({ name: "", description: "" });
+  const [addForm, setAddForm] = useState({
+    name: "",
+    description: "",
+    manager_user_id: "",
+  });
   const [editForm, setEditForm] = useState({
     id: null,
     name: "",
     description: "",
+    manager_user_id: "",
   });
 
   const fetchDepartments = async () => {
@@ -102,20 +135,34 @@ export default function Departments() {
     setDepartments(response.data);
   };
 
+  const fetchManagers = async () => {
+    const response = await axios.get(`${API_BASE_URL}/managers`, {
+      headers: getAuthHeaders(),
+    });
+    setManagers(response.data);
+  };
+
   useEffect(() => {
     let ignore = false;
 
     const loadDepartments = async () => {
       try {
-        const response = await axios.get(`${API_BASE_URL}/departments`, {
-          headers: getAuthHeaders(),
-        });
+        const [departmentsResponse, managersResponse] = await Promise.all([
+          axios.get(`${API_BASE_URL}/departments`, {
+            headers: getAuthHeaders(),
+          }),
+          axios.get(`${API_BASE_URL}/managers`, {
+            headers: getAuthHeaders(),
+          }),
+        ]);
         if (!ignore) {
-          setDepartments(response.data);
+          setDepartments(departmentsResponse.data);
+          setManagers(managersResponse.data);
         }
       } catch {
         if (!ignore) {
           setDepartments([]);
+          setManagers([]);
         }
       }
     };
@@ -137,8 +184,9 @@ export default function Departments() {
         headers: getAuthHeaders(),
       });
       setAddOpen(false);
-      setAddForm({ name: "", description: "" });
+      setAddForm({ name: "", description: "", manager_user_id: "" });
       fetchDepartments();
+      fetchManagers();
     } catch (error) {
       window.alert(
         error.response?.data?.error || "Failed to create department.",
@@ -157,11 +205,13 @@ export default function Departments() {
         {
           name: editForm.name,
           description: editForm.description,
+          manager_user_id: editForm.manager_user_id || null,
         },
         { headers: getAuthHeaders() },
       );
       setEditOpen(false);
       fetchDepartments();
+      fetchManagers();
     } catch (error) {
       window.alert(
         error.response?.data?.error || "Failed to update department.",
@@ -323,7 +373,7 @@ export default function Departments() {
             <Table>
               <TableHead>
                 <TableRow sx={{ background: "#f8faff" }}>
-                  {["Department", "Description", "Created", "Actions"].map(
+                  {["Department", "Manager", "Description", "Created", "Actions"].map(
                     (heading) => (
                       <TableCell
                         key={heading}
@@ -364,7 +414,7 @@ export default function Departments() {
                         >
                           <ApartmentRoundedIcon sx={{ fontSize: 18 }} />
                         </Avatar>
-                        <Typography
+                      <Typography
                           sx={{
                             fontSize: 14,
                             fontWeight: 700,
@@ -374,6 +424,15 @@ export default function Departments() {
                           {department.name}
                         </Typography>
                       </Box>
+                    </TableCell>
+                    <TableCell
+                      sx={{
+                        color: "#475569",
+                        fontSize: 13,
+                        borderBottom: "1px solid #f1f5f9",
+                      }}
+                    >
+                      {department.manager_name || "Unassigned"}
                     </TableCell>
                     <TableCell
                       sx={{
@@ -406,6 +465,7 @@ export default function Departments() {
                                 id: department.id,
                                 name: department.name,
                                 description: department.description || "",
+                                manager_user_id: department.manager_user_id || "",
                               });
                               setEditOpen(true);
                             }}
@@ -443,7 +503,7 @@ export default function Departments() {
                 {departments.length === 0 && (
                   <TableRow>
                     <TableCell
-                      colSpan={4}
+                      colSpan={5}
                       sx={{
                         textAlign: "center",
                         py: 5,
@@ -486,7 +546,11 @@ export default function Departments() {
           </IconButton>
         </DialogTitle>
         <DialogContent sx={{ pt: 2 }}>
-          <DepartmentFields form={addForm} setForm={setAddForm} />
+          <DepartmentFields
+            form={addForm}
+            setForm={setAddForm}
+            managers={managers}
+          />
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
           <Button
@@ -540,7 +604,11 @@ export default function Departments() {
           </IconButton>
         </DialogTitle>
         <DialogContent sx={{ pt: 2 }}>
-          <DepartmentFields form={editForm} setForm={setEditForm} />
+          <DepartmentFields
+            form={editForm}
+            setForm={setEditForm}
+            managers={managers}
+          />
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
           <Button

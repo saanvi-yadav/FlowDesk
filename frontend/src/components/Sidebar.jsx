@@ -256,6 +256,12 @@ export default function Sidebar({ unreadCount = 0 }) {
             </Typography>
             {section.links
               .filter((link) => {
+                if (user?.role === "employee" && ["/employees", "/departments", "/reports", "/payroll"].includes(link.path)) {
+                  return false;
+                }
+                if (user?.role === "manager" && link.path === "/departments") {
+                  return false;
+                }
                 if (link.path === "/payroll" && user?.role === "manager") {
                   return false;
                 }

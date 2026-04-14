@@ -23,9 +23,9 @@
     - invalid priority
     - invalid status
     - fake assignee
-    - malformed deadline
+    - malformed deadline 
 
-## Phase 4: Attendance and Leave
+## Phase 4: Attendance and Leave (all errors)
 
 1. Log in as an employee.
 2. Open Attendance and confirm the employee is preselected for self-marking.
@@ -49,7 +49,7 @@
 4. Refresh and confirm the record persists.
 5. Update payroll status from `pending` to `paid`.
 6. Try creating a duplicate payroll for the same employee and pay period and confirm rejection.
-7. Try invalid salary math where `net_pay` does not match `base_salary + bonus - deductions` and confirm rejection.
+7 #. Try invalid salary math where `net_pay` does not match `base_salary + bonus - deductions` and confirm rejection. 
 8. Log in as the employee and confirm only their payroll records are visible.
 9. Log in as a manager and confirm payroll access is denied or hidden.
 

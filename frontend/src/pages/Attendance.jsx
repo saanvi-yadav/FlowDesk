@@ -113,7 +113,10 @@ export default function Attendance() {
       const response = await axios.get(`${API_BASE_URL}/attendance`, {
         headers: getAuthHeaders(),
       });
-      setAttendance(response.data);
+      const records = Array.isArray(response.data)
+        ? response.data
+        : response.data?.records || [];
+      setAttendance(records);
       setError("");
     } catch (err) {
       setError(

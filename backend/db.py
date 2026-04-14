@@ -14,12 +14,13 @@ DB_CONFIG = {
     "auth_plugin": "mysql_native_password",
 }
 
+DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "20"))
 
 
 try:
     connection_pool = pooling.MySQLConnectionPool(
         pool_name="flowdesk_pool",
-        pool_size=5,
+        pool_size=DB_POOL_SIZE,
         pool_reset_session=True,
         **DB_CONFIG,
     )
@@ -30,10 +31,18 @@ except mysql.connector.Error as err:
 
 def get_db_connection():
     if connection_pool is None:
-        raise RuntimeError("Database connection pool was not initialized")
+        try:
+            return mysql.connector.connect(**DB_CONFIG)
+        except mysql.connector.Error as err:
+            raise RuntimeError(f"Database connection failed: {err}") from err
 
     try:
         return connection_pool.get_connection()
     except mysql.connector.Error as err:
-        raise RuntimeError(f"Failed to get DB connection: {err}") from err
+        try:
+            return mysql.connector.connect(**DB_CONFIG)
+        except mysql.connector.Error as direct_err:
+            raise RuntimeError(
+                f"Failed to get DB connection: {err}; direct connect also failed: {direct_err}"
+            ) from direct_err
     
