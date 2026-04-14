@@ -79,7 +79,7 @@ function Register() {
     <AuthShell
       eyebrow="ACCOUNT SETUP"
       title="Create your account and step into a cleaner company workspace."
-      subtitle="Register once and start collaborating inside the same system your department uses for projects, tasks, attendance, leave, and payroll visibility."
+      subtitle="Register once and start collaborating in the same system your department uses for projects, tasks, attendance, leave, and payroll visibility."
       features={[
         "Secure authentication with stronger backend password handling",
         "Role-aware dashboards for admin, manager, and employee workflows",
@@ -89,8 +89,8 @@ function Register() {
       cardSubtitle="Enter your details to join the workspace."
     >
       <form onSubmit={handleRegister}>
-        <Box sx={{ mb: 2.1 }}>
-          <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: "#334155", mb: 0.9 }}>
+        <Box sx={{ mb: 2 }}>
+          <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: "#334155", mb: 0.75 }}>
             Full Name
           </Typography>
           <TextField
@@ -110,8 +110,8 @@ function Register() {
           />
         </Box>
 
-        <Box sx={{ mb: 2.1 }}>
-          <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: "#334155", mb: 0.9 }}>
+        <Box sx={{ mb: 2 }}>
+          <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: "#334155", mb: 0.75 }}>
             Email Address
           </Typography>
           <TextField
@@ -132,8 +132,8 @@ function Register() {
           />
         </Box>
 
-        <Box sx={{ mb: 1.7 }}>
-          <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: "#334155", mb: 0.9 }}>
+        <Box sx={{ mb: 1.5 }}>
+          <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: "#334155", mb: 0.75 }}>
             Password
           </Typography>
           <TextField
@@ -161,7 +161,7 @@ function Register() {
           />
           {password && (
             <Box sx={{ mt: 1 }}>
-              <Box sx={{ display: "flex", gap: 0.5, mb: 0.55 }}>
+              <Box sx={{ display: "flex", gap: 0.5, mb: 0.5 }}>
                 {[1, 2, 3, 4, 5].map((item) => (
                   <Box
                     key={item}
@@ -181,8 +181,8 @@ function Register() {
           )}
         </Box>
 
-        <Box sx={{ mb: 2.1 }}>
-          <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: "#334155", mb: 0.9 }}>
+        <Box sx={{ mb: 2 }}>
+          <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: "#334155", mb: 0.75 }}>
             Confirm Password
           </Typography>
           <TextField
@@ -225,7 +225,7 @@ function Register() {
             }}
           />
           {confirmPassword && confirmPassword !== password && (
-            <Typography sx={{ fontSize: 12, color: "#ef4444", mt: 0.65, fontWeight: 600 }}>
+            <Typography sx={{ fontSize: 12, color: "#ef4444", mt: 0.6, fontWeight: 600 }}>
               Passwords do not match
             </Typography>
           )}
@@ -237,12 +237,12 @@ function Register() {
               background: message.type === "success" ? "#f0fdf4" : "#fef2f2",
               border: `1px solid ${message.type === "success" ? "#bbf7d0" : "#fecaca"}`,
               borderRadius: "12px",
-              px: 2,
-              py: 1.2,
-              mb: 2.2,
+              px: 1.75,
+              py: 1,
+              mb: 2,
             }}
           >
-            <Typography sx={{ color: message.type === "success" ? "#15803d" : "#dc2626", fontSize: 13.5 }}>
+            <Typography sx={{ color: message.type === "success" ? "#15803d" : "#dc2626", fontSize: 13 }}>
               {message.text}
             </Typography>
           </Box>
@@ -254,24 +254,24 @@ function Register() {
           fullWidth
           disabled={loading}
           sx={{
-            mt: 1.5,
-            py: 1.7,
-            borderRadius: "16px",
+            mt: 1.25,
+            py: 1.4,
+            borderRadius: "14px",
             fontWeight: 800,
-            fontSize: 17,
+            fontSize: 15,
             textTransform: "none",
             background: "linear-gradient(90deg,#2563eb,#38bdf8)",
-            boxShadow: "0 14px 28px rgba(37,99,235,0.28)",
+            boxShadow: "0 12px 24px rgba(37,99,235,0.22)",
           }}
         >
           {loading ? "Creating account..." : "Create Account"}
         </Button>
 
-        <Divider sx={{ my: 3.5, color: "#94a3b8", fontSize: 12.5 }}>
+        <Divider sx={{ my: 3, color: "#94a3b8", fontSize: 12.5 }}>
           or
         </Divider>
 
-        <Typography textAlign="center" sx={{ fontSize: 15, color: "#64748b" }}>
+        <Typography textAlign="center" sx={{ fontSize: 14, color: "#64748b" }}>
           Already have an account?{" "}
           <Link
             to="/"

@@ -33,6 +33,7 @@ function Login() {
     event.preventDefault();
     setLoading(true);
     setMessage("");
+
     try {
       const response = await loginRequest({ email, password });
       setStoredAuth(response.data.user, response.data.token);
@@ -52,18 +53,18 @@ function Login() {
     <AuthShell
       eyebrow="TEAM OPERATIONS PLATFORM"
       title="Welcome back. Keep projects, people, and progress moving."
-      subtitle="Sign in to your workspace to review department activity, task flow, payroll visibility, and daily operations with cleaner role-based control."
+      subtitle="Sign in to your workspace to review department activity, task flow, payroll visibility, and daily operations with role-based control."
       features={[
         "Employee, attendance, leave, and payroll visibility in one workspace",
         "Clear manager-led project and task ownership across departments",
-        "Fast navigation with polished dashboards, boards, and reporting",
+        "Fast navigation through dashboards, boards, and reports",
       ]}
       cardTitle="Sign in to FlowDesk"
       cardSubtitle="Use your email or username to enter your workspace."
     >
       <form onSubmit={handleLogin}>
-        <Box sx={{ mb: 2.25 }}>
-          <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: "#334155", mb: 0.9 }}>
+        <Box sx={{ mb: 2 }}>
+          <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: "#334155", mb: 0.75 }}>
             Email or Username
           </Typography>
           <TextField
@@ -83,8 +84,8 @@ function Login() {
           />
         </Box>
 
-        <Box sx={{ mb: 1.2 }}>
-          <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 0.9 }}>
+        <Box sx={{ mb: 1.5 }}>
+          <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 0.75 }}>
             <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: "#334155" }}>
               Password
             </Typography>
@@ -128,12 +129,12 @@ function Login() {
               background: "#fef2f2",
               border: "1px solid #fecaca",
               borderRadius: "12px",
-              px: 2,
-              py: 1.2,
-              mb: 2.25,
+              px: 1.75,
+              py: 1,
+              mb: 2,
             }}
           >
-            <Typography sx={{ color: "#dc2626", fontSize: 13.5 }}>{message}</Typography>
+            <Typography sx={{ color: "#dc2626", fontSize: 13 }}>{message}</Typography>
           </Box>
         )}
 
@@ -143,24 +144,24 @@ function Login() {
           fullWidth
           disabled={loading}
           sx={{
-            mt: 2,
-            py: 1.7,
-            borderRadius: "16px",
+            mt: 1.5,
+            py: 1.4,
+            borderRadius: "14px",
             fontWeight: 800,
-            fontSize: 17,
+            fontSize: 15,
             textTransform: "none",
             background: "linear-gradient(90deg,#2563eb,#38bdf8)",
-            boxShadow: "0 14px 28px rgba(37,99,235,0.28)",
+            boxShadow: "0 12px 24px rgba(37,99,235,0.22)",
           }}
         >
           {loading ? "Signing in..." : "Sign In"}
         </Button>
 
-        <Divider sx={{ my: 3.5, color: "#94a3b8", fontSize: 12.5 }}>
+        <Divider sx={{ my: 3, color: "#94a3b8", fontSize: 12.5 }}>
           or
         </Divider>
 
-        <Typography textAlign="center" sx={{ fontSize: 15, color: "#64748b" }}>
+        <Typography textAlign="center" sx={{ fontSize: 14, color: "#64748b" }}>
           Don&apos;t have an account?{" "}
           <Link
             to="/register"
